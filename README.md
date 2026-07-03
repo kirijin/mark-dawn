@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="mark-dawn logo" width="200">
+  <img src="https://raw.githubusercontent.com/kirijin/mark-dawn/main/logo.png" width="200">
 </p>
 
 # BEWARE
