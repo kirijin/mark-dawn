@@ -1,7 +1,3 @@
-</picture>
-    src="logo.png">
-</picture>
-
 # BEWARE
 # !!!VIBE_SLOP_HAZARD!!!
 
