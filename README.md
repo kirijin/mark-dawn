@@ -1,3 +1,5 @@
+### !!!VIBE_CODE_HAZARD!!!
+
 # mark-dawn
 
 **Universal Document to Markdown Pipeline** with auto-OCR for scanned PDFs.
@@ -16,12 +18,12 @@ Converts PDF, DOCX, XLSX, PPTX, HTML, CSV, RTF to clean Markdown with:
 curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.sh -o mark-dawn
 chmod +x mark-dawn
 ./mark-dawn start
+```
 
-
-
+```powershell
 iwr -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.ps1" -OutFile mark-dawn.ps1
 .\mark-dawn.ps1 -Command start
-
+```
 
 
 Requirements: Podman or Docker installed.
