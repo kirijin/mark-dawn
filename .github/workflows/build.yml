@@ -30,6 +30,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Verify files exist
+        run: ls -la Dockerfile convert_pdf.py watcher.py entrypoint.sh
 
       - name: Set up QEMU (for multi-arch builds)
         uses: docker/setup-qemu-action@v3
