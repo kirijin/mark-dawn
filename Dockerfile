@@ -1,7 +1,5 @@
 FROM docker.io/jbarlow83/ocrmypdf:v17
 
-# Устанавливаем языковые пакеты Tesseract + python3-pip + venv
-# ISO 639-2: eng, rus, fra (French), deu (German), chi_sim (Chinese Simplified), jpn (Japanese)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-eng \
     tesseract-ocr-rus \
@@ -13,11 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Создаём изолированное виртуальное окружение
 RUN python3 -m venv /opt/markdawn
 ENV PATH="/opt/markdawn/bin:$PATH"
 
-# Обновляем pip и ставим Python-инструменты
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
     pymupdf4llm \
@@ -25,7 +21,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
     watchdog \
     ocrmypdf
 
-# Копируем скрипты
 COPY convert_pdf.py /usr/local/bin/
 COPY watcher.py /usr/local/bin/
 COPY entrypoint.sh /usr/local/bin/
