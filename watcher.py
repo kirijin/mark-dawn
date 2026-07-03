@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import time, subprocess, sys
+import time, subprocess, sys, os   # ← os импортируется глобально!
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -66,7 +66,6 @@ def process_file(file_path: Path):
     return False
 
 def main():
-    import os
     INBOX.mkdir(parents=True, exist_ok=True)
     RESEARCH.mkdir(parents=True, exist_ok=True)
     FAILED.mkdir(parents=True, exist_ok=True)
