@@ -28,27 +28,64 @@ iwr -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.ps1
 
 ## Requirements: Podman or Docker installed.
 
-
 ## Usage
-### Auto-convert files dropped into ~/Documents/Inbox
-./mark-dawn start
 
-### Convert a single file
-./mark-dawn convert ~/Downloads/paper.pdf
+### Linux / macOS
+```
+# Проверить, запущен ли
+./mark-dawn status
 
-### Follow logs
-./mark-dawn logs
-
-### Stop
+# Остановить
 ./mark-dawn stop
 
-### Auto-start on boot (Linux)
-./mark-dawn install-systemd
+# Запустить заново
+./mark-dawn start
 
-### Update image
+# Смотреть логи в реальном времени
+./mark-dawn logs
+
+# Обновить до последней версии
 ./mark-dawn update
 
-### How It Works
+# Сделать автозапуск при входе в систему
+./mark-dawn install-systemd
+
+# После install-systemd управление через systemctl:
+systemctl --user status mark-dawn
+systemctl --user stop mark-dawn
+systemctl --user restart mark-dawn
+journalctl --user -u mark-dawn -f    # логи через journalctl
+```
+### Windows (PowerShell)
+```
+# Запустить
+.\mark-dawn.ps1 -Command start
+
+# Остановить
+.\mark-dawn.ps1 -Command stop
+
+# Статус
+.\mark-dawn.ps1 -Command status
+
+# Логи
+.\mark-dawn.ps1 -Command logs
+
+# Обновить
+.\mark-dawn.ps1 -Command update
+
+# Автозапуск при входе в систему (Task Scheduler)
+.\mark-dawn.ps1 -Command install-task
+
+# После install-task управление через Task Scheduler:
+Get-ScheduledTask -TaskName "mark-dawn" | Select-Object State
+Stop-ScheduledTask -TaskName "mark-dawn"
+Start-ScheduledTask -TaskName "mark-dawn"
+
+# Удалить автозапуск
+.\mark-dawn.ps1 -Command uninstall-task
+```
+
+## How It Works
 
     You drop a file into ~/Documents/Inbox/
     Watcher detects it (3s debounce)
