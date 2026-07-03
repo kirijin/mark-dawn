@@ -10,14 +10,15 @@ Converts PDF, DOCX, XLSX, PPTX, HTML, CSV, RTF to clean Markdown with:
 
 ## Quick Start (one command)
 
-### Linux / macOS
+
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.sh -o mark-dawn
 chmod +x mark-dawn
 ./mark-dawn start
 
-```powershell
+
+
 iwr -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.ps1" -OutFile mark-dawn.ps1
 .\mark-dawn.ps1 -Command start
 
