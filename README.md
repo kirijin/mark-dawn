@@ -87,7 +87,7 @@ Start-ScheduledTask -TaskName "mark-dawn"
 ```
 
 ## How It Works
-
+```
     You drop a file into ~/Documents/Inbox/
     Watcher detects it (3s debounce)
     For digital PDFs (avg >100 chars/page) → pymupdf4llm → Markdown (fast)
@@ -95,17 +95,18 @@ Start-ScheduledTask -TaskName "mark-dawn"
     For Office files → markitdown → Markdown
     Result appears in ~/Documents/Research/<filename>.md
     Failed files moved to ~/Documents/Inbox_Failed/
-
+```
 ### Directory Layout
-
+```
 ~/Documents/
 ├── Inbox/         ← Drop files here
 ├── Research/      ← Converted Markdown appears here
 └── Inbox_Failed/  ← Files that couldn't be converted
-
+```
 ### Building Locally
-
+```
 git clone https://github.com/kirijin/mark-dawn.git
 cd mark-dawn
 podman build -t mark-dawn:latest .
 MARK_DAWN_IMAGE=localhost/mark-dawn:latest ./mark-dawn.sh start
+```
