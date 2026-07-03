@@ -1,6 +1,6 @@
-### !!!VIBE_CODE_HAZARD!!!
+# !!!VIBE_CODE_HAZARD!!!
 
-# mark-dawn
+## mark-dawn
 
 **Universal Document to Markdown Pipeline** with auto-OCR for scanned PDFs.
 
@@ -26,29 +26,29 @@ iwr -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.ps1
 ```
 
 
-Requirements: Podman or Docker installed.
+## Requirements: Podman or Docker installed.
 
 
-### Usage
-# Auto-convert files dropped into ~/Documents/Inbox
+## Usage
+### Auto-convert files dropped into ~/Documents/Inbox
 ./mark-dawn start
 
-# Convert a single file
+### Convert a single file
 ./mark-dawn convert ~/Downloads/paper.pdf
 
-# Follow logs
+### Follow logs
 ./mark-dawn logs
 
-# Stop
+### Stop
 ./mark-dawn stop
 
-# Auto-start on boot (Linux)
+### Auto-start on boot (Linux)
 ./mark-dawn install-systemd
 
-# Update image
+### Update image
 ./mark-dawn update
 
-How It Works
+### How It Works
 
     You drop a file into ~/Documents/Inbox/
     Watcher detects it (3s debounce)
@@ -58,14 +58,14 @@ How It Works
     Result appears in ~/Documents/Research/<filename>.md
     Failed files moved to ~/Documents/Inbox_Failed/
 
-Directory Layout
+### Directory Layout
 
 ~/Documents/
 ├── Inbox/         ← Drop files here
 ├── Research/      ← Converted Markdown appears here
 └── Inbox_Failed/  ← Files that couldn't be converted
 
-Building Locally
+### Building Locally
 
 git clone https://github.com/kirijin/mark-dawn.git
 cd mark-dawn
