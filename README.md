@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="mark-dawn logo" width="200">
+</p>
+
 # BEWARE
 # !!!VIBE_SLOP_HAZARD!!!
 
