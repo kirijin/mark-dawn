@@ -1,3 +1,4 @@
+[img]logo.png[/img]
 # BEWARE
 # !!!VIBE_SLOP_HAZARD!!!
 
