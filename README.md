@@ -1,4 +1,5 @@
-# !!!VIBE_CODE_HAZARD!!!
+# BEWARE
+# !!!VIBE_SLOP_HAZARD!!!
 
 ## mark-dawn
 
