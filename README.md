@@ -20,9 +20,9 @@ Converts PDF, DOCX, XLSX, PPTX, HTML, CSV, RTF to clean Markdown with:
 
 ### Linux / macOS
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.sh -o mark-dawn
-chmod +x mark-dawn
-./mark-dawn start
+curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.sh -o ~/.local/bin/mark-dawn
+chmod +x ~/.local/bin/mark-dawn
+mark-dawn start
 ```
 ### Windows (PowerShell) (BROKEN. SLOP in PROGRESS)
 ```powershell
