@@ -11,7 +11,7 @@ param(
     [switch]$Help
 )
 
-# Do NOT use "Stop" — external commands (pacman, gpg) return non-zero on warnings
+# Continue on warnings, but use explicit error checking for critical commands
 $ErrorActionPreference = "Continue"
 
 function Write-Step  { param([string]$n,[string]$m) Write-Host "[$n] " -ForegroundColor Cyan -NoNewline; Write-Host $m }
@@ -135,10 +135,20 @@ Write-Step "5/8" "Installing system packages (tesseract, python, ghostscript)...
 $packages = "mingw-w64-x86_64-tesseract-ocr mingw-w64-x86_64-ghostscript mingw-w64-x86_64-python mingw-w64-x86_64-python-pip"
 
 Write-Info "Running: pacman -Sy --noconfirm --disable-download-timeout"
-& $bash -lc "pacman -Sy --noconfirm --disable-download-timeout" 2>$null | Out-Null
+$output = & $bash -lc "pacman -Sy --noconfirm --disable-download-timeout" 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "pacman -Sy failed:" -ForegroundColor Red
+    $output | Select-Object -Last 10 | ForEach-Object { Write-Host "  $_" }
+    Write-Fail "pacman repository sync failed"
+}
 
 Write-Info "Installing packages (this takes 3-5 minutes)..."
-& $bash -lc "pacman -S --noconfirm --needed --disable-download-timeout $packages" 2>$null | Out-Null
+$output = & $bash -lc "pacman -S --noconfirm --needed --disable-download-timeout $packages" 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "pacman -S failed:" -ForegroundColor Red
+    $output | Select-Object -Last 10 | ForEach-Object { Write-Host "  $_" }
+    Write-Fail "pacman package install failed"
+}
 
 # Verify critical binaries
 $pythonExe = Join-Path $MSYS2_DIR "mingw64\bin\python.exe"
@@ -163,12 +173,19 @@ Write-Step "6/8" "Installing Python packages (pymupdf4llm, markitdown, ocrmypdf,
 $pyPackages = "pymupdf4llm 'markitdown[all]' watchdog ocrmypdf pikepdf img2pdf"
 
 Write-Info "Installing via pip (this takes 2-5 minutes)..."
-& $bash -lc "/mingw64/bin/python -m pip install --break-system-packages --no-cache-dir $pyPackages" 2>$null | Out-Null
+$output = & $bash -lc "/mingw64/bin/python -m pip install --break-system-packages --no-cache-dir $pyPackages" 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "pip install failed:" -ForegroundColor Red
+    $output | Select-Object -Last 20 | ForEach-Object { Write-Host "  $_" }
+    Write-Fail "Python pip install failed"
+}
 
 # Verify imports
-$verifyResult = & $bash -lc "/mingw64/bin/python -c 'import pymupdf4llm, markitdown, watchdog, ocrmypdf; print(\"OK\")'" 2>&1
+$verifyResult = & $bash -lc "/mingw64/bin/python -c 'import pymupdf4llm, markitdown, watchdog, ocrmypdf; print(\"OK\")'" 2>&1 | Select-Object -Last 1
 if ($verifyResult -notmatch "OK") {
-    Write-Fail "Python import verification failed: $verifyResult"
+    Write-Host "Import verification failed:" -ForegroundColor Red
+    Write-Host "  $verifyResult"
+    Write-Fail "Python import verification failed"
 }
 Write-OK "Python packages installed and verified"
 
@@ -339,7 +356,7 @@ if __name__ == "__main__":
     main()
 '@
 
-$watcherPy | Out-File -FilePath (Join-Path $SCRIPTS_DIR "watcher.py") -Encoding utf8
+$watcherPy | Out-File -FilePath (Join-Path $SCRIPTS_DIR "watcher.py") -Encoding utf8NoBOM
 
 # --- convert_pdf.py ---
 $convertPdfPy = @'
@@ -405,7 +422,7 @@ except Exception as e:
     sys.exit(1)
 '@
 
-$convertPdfPy | Out-File -FilePath (Join-Path $SCRIPTS_DIR "convert_pdf.py") -Encoding utf8
+$convertPdfPy | Out-File -FilePath (Join-Path $SCRIPTS_DIR "convert_pdf.py") -Encoding utf8NoBOM
 
 # --- mark-dawn.bat (launcher) ---
 $launcherBat = @"
