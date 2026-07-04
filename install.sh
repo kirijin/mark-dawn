@@ -164,7 +164,7 @@ printf "\n${C_GREEN}=== mark-dawn installed ===${C_RESET}\n\n"
 #else
     printf "Run:\n\n"
     printf "  ${C_CYAN}mark-dawn start${C_RESET}\n\n"
-fi
+#fi
 
 printf "Other commands:\n"
 printf "  mark-dawn stop          # stop the watcher\n"
