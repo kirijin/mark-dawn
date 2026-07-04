@@ -1,253 +1,652 @@
-#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    mark-dawn: complete installer for Windows (WSL + Podman + container)
+    mark-dawn portable installer for Windows (MSYS2-based, no WSL required)
 .DESCRIPTION
-    Installs everything in one command:
-    - WSL2 (if not installed)
-    - Podman (if not installed)
-    - Podman machine (Linux VM)
-    - mark-dawn container
+    Installs mark-dawn as a fully portable application in %USERPROFILE%\mark-dawn.
+    - No administrator rights required for installation
+    - No WSL, no VM, no Docker
+    - Native Windows binaries via MSYS2 (Tesseract, Ghostscript, Python)
+    - Admin rights required ONLY for install-task (Task Scheduler)
 .NOTES
-    Requires: Windows 10/11, administrator rights
+    Supports Windows 10/11 x64. All paths are relative to install root.
 #>
 
 param(
-    [switch]$SkipReboot,
-    [switch]$Force
+    [string]$InstallDir = "",
+    [switch]$SkipInit,
+    [switch]$Help
 )
 
 $ErrorActionPreference = "Stop"
 
-function Write-Step {
-    param([string]$Step, [string]$Message)
-    Write-Host "[$Step] " -ForegroundColor Cyan -NoNewline
-    Write-Host $Message
+# ============================================================================
+# Helper functions (English messages for automation compatibility)
+# ============================================================================
+function Write-Step  { param([string]$n,[string]$m) Write-Host "[$n] " -ForegroundColor Cyan -NoNewline; Write-Host $m }
+function Write-OK    { param([string]$m) Write-Host "OK: $m" -ForegroundColor Green }
+function Write-Info  { param([string]$m) Write-Host ">> $m" -ForegroundColor Yellow }
+function Write-Fail  { param([string]$m) Write-Host "FAIL: $m" -ForegroundColor Red; exit 1 }
+
+function Show-Help {
+    Write-Host "mark-dawn portable installer for Windows" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Usage: install-msys2.ps1 [-InstallDir <path>] [-SkipInit] [-Help]"
+    Write-Host ""
+    Write-Host "Parameters:"
+    Write-Host "  -InstallDir   Custom installation directory (default: %USERPROFILE%\mark-dawn)"
+    Write-Host "  -SkipInit     Skip MSYS2 initialization (advanced, for re-runs)"
+    Write-Host "  -Help         Show this help message"
+    Write-Host ""
+    Write-Host "After installation, use the launcher:"
+    Write-Host "  %USERPROFILE%\mark-dawn\mark-dawn.bat start|stop|restart|convert|logs|status|update"
+    exit 0
 }
 
-function Write-OK { param([string]$Message) Write-Host "OK: $Message" -ForegroundColor Green }
-function Write-Info { param([string]$Message) Write-Host ">> $Message" -ForegroundColor Yellow }
-function Write-Fail { param([string]$Message) Write-Host "FAIL: $Message" -ForegroundColor Red }
-
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " mark-dawn installer for Windows" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
+if ($Help) { Show-Help }
 
 # ============================================================================
-# [1/7] Check admin rights
+# [1/9] Resolve installation directory (generic, no admin required)
 # ============================================================================
-Write-Step "1/7" "Checking administrator rights..."
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Write-Fail "Script requires administrator rights"
-    Write-Host "Run PowerShell as Administrator:" -ForegroundColor Yellow
-    Write-Host "  Right-click Start -> Terminal (Admin)" -ForegroundColor Yellow
-    exit 1
+Write-Step "1/9" "Resolving installation directory..."
+
+if (-not $InstallDir) {
+    $InstallDir = Join-Path $env:USERPROFILE "mark-dawn"
 }
-Write-OK "Administrator rights confirmed"
+$InstallDir = (Resolve-Path $InstallDir -ErrorAction SilentlyContinue) ?? $InstallDir
 
-# ============================================================================
-# [2/7] Check and install WSL
-# ============================================================================
-Write-Step "2/7" "Checking WSL..."
-$wslInstalled = $false
+$MSYS2_DIR     = Join-Path $InstallDir "msys2"
+$DATA_DIR      = Join-Path $InstallDir "data"
+$SCRIPTS_DIR   = Join-Path $InstallDir "scripts"
+$LOGS_DIR      = Join-Path $InstallDir "logs"
+$TESSDATA_DIR  = Join-Path $MSYS2_DIR "mingw64\share\tessdata"
+$LAUNCHER_PATH = Join-Path $InstallDir "mark-dawn.bat"
+$PID_FILE      = Join-Path $InstallDir "mark-dawn.pid"
+$LOG_FILE      = Join-Path $LOGS_DIR "mark-dawn.log"
+
+# Verify user has write permissions (no admin required)
 try {
-    $wslStatus = wsl --status 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        $wslInstalled = $true
-        Write-OK "WSL already installed"
-    }
+    New-Item -ItemType Directory -Force -Path $InstallDir, $DATA_DIR, $SCRIPTS_DIR, $LOGS_DIR | Out-Null
 } catch {
-    $wslInstalled = $false
+    Write-Fail "Cannot write to $InstallDir. Check permissions."
 }
+Write-OK "Install directory: $InstallDir"
 
-if (-not $wslInstalled) {
-    Write-Info "WSL not found, installing..."
+# ============================================================================
+# [2/9] Download MSYS2 portable installer
+# ============================================================================
+Write-Step "2/9" "Downloading MSYS2 portable installer (~100 MB)..."
+
+$msys2Installer = Join-Path $env:TEMP "msys2-installer.exe"
+$msys2Url = "https://github.com/msys2/msys2-installer/releases/download/2025-02-21/msys2-base-x86_64-latest.sfx.exe"
+
+if (-not (Test-Path $msys2Installer)) {
     try {
-        wsl --install --no-distribution
-        if ($LASTEXITCODE -ne 0) { throw "wsl --install failed" }
-        Write-OK "WSL installed"
-        
-        if (-not $SkipReboot) {
-            Write-Host ""
-            Write-Host "!! REBOOT REQUIRED to complete WSL installation" -ForegroundColor Yellow
-            Write-Host "After reboot, run this script again." -ForegroundColor Yellow
-            Write-Host ""
-            $confirm = Read-Host "Reboot now? (y/N)"
-            if ($confirm -eq 'y' -or $confirm -eq 'Y') {
-                shutdown /r /t 10 /c "Rebooting to complete WSL installation"
-            } else {
-                Write-Host "Reboot manually and run script again." -ForegroundColor Yellow
-            }
-            exit 0
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $msys2Url -OutFile $msys2Installer -UseBasicParsing
+    } catch {
+        Write-Fail "Failed to download MSYS2: $_"
+    }
+}
+Write-OK "MSYS2 installer ready"
+
+# ============================================================================
+# [3/9] Extract MSYS2 to portable directory
+# ============================================================================
+Write-Step "3/9" "Extracting MSYS2 (this takes 2-5 minutes)..."
+
+if (-not (Test-Path (Join-Path $MSYS2_DIR "usr\bin\bash.exe"))) {
+    try {
+        # Silent extraction to parent directory, then rename
+        $parentDir = Split-Path $InstallDir -Parent
+        $tempExtract = Join-Path $parentDir "msys2_extract"
+        New-Item -ItemType Directory -Force -Path $tempExtract | Out-Null
+
+        $proc = Start-Process -FilePath $msys2Installer -ArgumentList "-y", "-o`"$tempExtract`"" -Wait -PassThru -NoNewWindow
+        if ($proc.ExitCode -ne 0) { throw "Extraction failed with code $($proc.ExitCode)" }
+
+        # Move extracted content to final location
+        $extracted = Join-Path $tempExtract "msys2"
+        if (Test-Path $extracted) {
+            Move-Item -Path $extracted -Destination $MSYS2_DIR -Force
+            Remove-Item -Path $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
         }
+        Write-OK "MSYS2 extracted to $MSYS2_DIR"
     } catch {
-        Write-Fail "Failed to install WSL: $_"
-        exit 1
+        Write-Fail "Failed to extract MSYS2: $_"
     }
-}
-
-# Check that WSL2 is active
-try {
-    $wslList = wsl --list --verbose 2>&1
-    Write-OK "WSL is working"
-} catch {
-    Write-Fail "WSL installed but not working. Reboot required."
-    exit 1
-}
-
-# ============================================================================
-# [3/7] Check and install Podman
-# ============================================================================
-Write-Step "3/7" "Checking Podman..."
-if (Get-Command podman -ErrorAction SilentlyContinue) {
-    $podmanVer = (podman --version).Trim()
-    Write-OK "Podman found: $podmanVer"
 } else {
-    Write-Info "Podman not found, installing via winget..."
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Write-Fail "winget not found. Install Podman manually:"
-        Write-Host "  https://podman-desktop.io/" -ForegroundColor Yellow
-        exit 1
-    }
+    Write-OK "MSYS2 already extracted, skipping"
+}
+
+# ============================================================================
+# [4/9] Initialize MSYS2 (first-run setup + pacman update)
+# ============================================================================
+Write-Step "4/9" "Initializing MSYS2 (first run, takes 3-5 minutes)..."
+
+$bash = Join-Path $MSYS2_DIR "usr\bin\bash.exe"
+
+if (-not $SkipInit) {
     try {
-        winget install --id RedHat.Podman -e --accept-source-agreements --accept-package-agreements
-        if ($LASTEXITCODE -ne 0) { throw "winget install failed" }
-        Write-OK "Podman installed"
-        
-        # Update PATH in current session
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        
-        if (-not (Get-Command podman -ErrorAction SilentlyContinue)) {
-            Write-Host ""
-            Write-Host "!! Podman installed but PATH not updated." -ForegroundColor Yellow
-            Write-Host "Restart PowerShell and run script again." -ForegroundColor Yellow
-            exit 0
+        # First run: initialize user profile and keyring
+        & $bash -lc "exit" | Out-Null
+        Start-Sleep -Seconds 3
+
+        # Update core system (requires double-pass on fresh MSYS2)
+        Write-Info "First pass: updating core system..."
+        & $bash -lc "pacman -Syu --noconfirm" | Out-Null
+
+        Write-Info "Second pass: updating remaining packages..."
+        & $bash -lc "pacman -Su --noconfirm" | Out-Null
+
+        Write-OK "MSYS2 initialized"
+    } catch {
+        Write-Fail "MSYS2 initialization failed: $_"
+    }
+}
+
+# ============================================================================
+# [5/9] Install Tesseract, ocrmypdf, Ghostscript, Python via pacman
+# ============================================================================
+Write-Step "5/9" "Installing OCR stack via pacman (5-10 minutes)..."
+
+try {
+    # All packages available in MINGW64 repo (native Windows binaries)
+    $packages = @(
+        "mingw-w64-x86_64-tesseract-ocr",
+        "mingw-w64-x86_64-tesseract-ocr-data",
+        "mingw-w64-x86_64-ocrmypdf",
+        "mingw-w64-x86_64-ghostscript",
+        "mingw-w64-x86_64-python",
+        "mingw-w64-x86_64-python-pip",
+        "mingw-w64-x86_64-python-pymupdf"
+    )
+    $pkgList = $packages -join " "
+    & $bash -lc "pacman -S --noconfirm --needed $pkgList" | Out-Null
+    Write-OK "OCR stack installed"
+} catch {
+    Write-Fail "Failed to install packages: $_"
+}
+
+# ============================================================================
+# [6/9] Install Python packages via pip (inside MSYS2)
+# ============================================================================
+Write-Step "6/9" "Installing Python packages (pymupdf4llm, markitdown, watchdog)..."
+
+try {
+    $pip = Join-Path $MSYS2_DIR "mingw64\bin\pip.exe"
+    & $pip install --quiet pymupdf4llm "markitdown[all]" watchdog | Out-Null
+    Write-OK "Python packages installed"
+} catch {
+    Write-Fail "Failed to install Python packages: $_"
+}
+
+# ============================================================================
+# [7/9] Download language models (eng, rus, fra, deu, chi_sim, jpn)
+# ============================================================================
+Write-Step "7/9" "Downloading language models for 6 languages..."
+
+$languages = @("eng", "rus", "fra", "deu", "chi_sim", "jpn")
+$baseUrl = "https://github.com/tesseract-ocr/tessdata/raw/main"
+
+foreach ($lang in $languages) {
+    $dest = Join-Path $TESSDATA_DIR "$lang.traineddata"
+    if (-not (Test-Path $dest) -or (Get-Item $dest).Length -lt 1MB) {
+        Write-Info "Downloading $lang..."
+        try {
+            Invoke-WebRequest -Uri "$baseUrl/$lang.traineddata" -OutFile $dest -UseBasicParsing
+        } catch {
+            Write-Host "WARNING: Failed to download $lang" -ForegroundColor Yellow
         }
-    } catch {
-        Write-Fail "Failed to install Podman: $_"
-        exit 1
     }
 }
+Write-OK "Language models ready"
 
 # ============================================================================
-# [4/7] Check and create Podman machine
+# [8/9] Generate Python scripts with generic paths
 # ============================================================================
-Write-Step "4/7" "Checking Podman machine..."
+Write-Step "8/9" "Generating watcher.py and convert_pdf.py..."
 
-# Check if machine exists
-$machines = podman machine list --format "{{.Name}}" 2>&1
-$hasMachine = $machines -and ($machines -notlike "*cannot*") -and ($machines -notlike "*error*") -and ($machines.Trim().Length -gt 0)
+# --- watcher.py ---
+$watcherPy = @'
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+mark-dawn watcher: monitors Inbox folder and converts new files to Markdown.
+Uses environment variables for paths (portable across Windows/Linux/macOS).
+"""
+import os, sys, time, subprocess
+from pathlib import Path
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
-if (-not $hasMachine) {
-    Write-Info "Creating Podman machine (this will take 2-5 minutes)..."
-    try {
-        podman machine init --cpus 2 --memory 4096 --disk-size 50
-        if ($LASTEXITCODE -ne 0) { throw "podman machine init failed" }
-        Write-OK "Podman machine created"
-    } catch {
-        Write-Fail "Failed to create Podman machine: $_"
-        exit 1
-    }
-} else {
-    Write-OK "Podman machine exists"
-}
+# Resolve paths from environment (set by launcher)
+DATA_DIR     = Path(os.environ.get("MARK_DAWN_DATA", os.path.expanduser("~/Documents")))
+INBOX        = DATA_DIR / "Inbox"
+RESEARCH     = DATA_DIR / "Research"
+FAILED       = DATA_DIR / "Inbox_Failed"
+SCRIPTS_DIR  = Path(os.environ.get("MARK_DAWN_SCRIPTS", Path(__file__).parent))
+LOG_FILE     = Path(os.environ.get("MARK_DAWN_LOG", SCRIPTS_DIR.parent / "logs" / "mark-dawn.log"))
+CONVERT_SCRIPT = SCRIPTS_DIR / "convert_pdf.py"
+DEBOUNCE     = 3.0
+
+SUPPORTED = {".pdf", ".docx", ".xlsx", ".pptx", ".html", ".csv", ".rtf"}
+
+def log(msg):
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] {msg}"
+    print(line, flush=True)
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+class InboxHandler(FileSystemEventHandler):
+    def __init__(self):
+        self.pending = {}
+
+    def _touch(self, p):
+        p = Path(p)
+        if p.suffix.lower() in SUPPORTED and not p.name.startswith("~"):
+            self.pending[p] = time.time()
+
+    def on_created(self, e):
+        if not e.is_directory:
+            self._touch(e.src_path)
+            log(f"New file detected: {Path(e.src_path).name}")
+
+    def on_moved(self, e):
+        if not e.is_directory:
+            self._touch(e.dest_path)
+
+    def on_modified(self, e):
+        if not e.is_directory:
+            self._touch(e.src_path)
+
+def process_file(file_path: Path) -> bool:
+    """Process a single file. Returns True on success."""
+    ext = file_path.suffix.lower()
+    out_file = RESEARCH / f"{file_path.stem}.md"
+
+    try:
+        if ext == ".pdf":
+            result = subprocess.run(
+                [sys.executable, str(CONVERT_SCRIPT), str(file_path)],
+                timeout=700
+            )
+            if result.returncode == 0 and out_file.exists():
+                file_path.unlink(missing_ok=True)
+                log(f"OK: {file_path.name} -> {out_file.name}")
+                return True
+        elif ext in {".docx", ".xlsx", ".pptx", ".html", ".csv", ".rtf"}:
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            result = subprocess.run(
+                ["markitdown", str(file_path)],
+                capture_output=True, text=True, timeout=120, env=env
+            )
+            if result.returncode == 0 and result.stdout:
+                out_file.write_text(result.stdout, encoding="utf-8")
+                file_path.unlink(missing_ok=True)
+                log(f"OK: {file_path.name} -> {out_file.name}")
+                return True
+    except Exception as e:
+        log(f"Error processing {file_path.name}: {e}")
+
+    # Move to Failed on any error
+    try:
+        dest = FAILED / file_path.name
+        file_path.rename(dest)
+        log(f"FAIL: {file_path.name} moved to Failed")
+    except Exception as e:
+        log(f"Failed to move {file_path.name} to Failed: {e}")
+    return False
+
+def main():
+    INBOX.mkdir(parents=True, exist_ok=True)
+    RESEARCH.mkdir(parents=True, exist_ok=True)
+    FAILED.mkdir(parents=True, exist_ok=True)
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write PID for stop/status commands
+    pid_file = Path(os.environ.get("MARK_DAWN_PID", SCRIPTS_DIR.parent / "mark-dawn.pid"))
+    pid_file.write_text(str(os.getpid()))
+
+    handler = InboxHandler()
+    observer = Observer()
+    observer.schedule(handler, str(INBOX), recursive=False)
+    observer.start()
+
+    log(f"mark-dawn watcher started (PID {os.getpid()})")
+    log(f"Watching: {INBOX}")
+    log(f"Output:   {RESEARCH}")
+
+    try:
+        while True:
+            time.sleep(1.0)
+            now = time.time()
+            ready = [p for p, t in list(handler.pending.items())
+                     if now - t >= DEBOUNCE and p.exists()]
+            if ready:
+                for p in ready:
+                    handler.pending.pop(p, None)
+                    log(f"Processing: {p.name}")
+                    process_file(p)
+    except KeyboardInterrupt:
+        log("Stopping watcher...")
+        observer.stop()
+    observer.join()
+
+    try:
+        pid_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+if __name__ == "__main__":
+    main()
+'@
+
+$watcherPy | Out-File -FilePath (Join-Path $SCRIPTS_DIR "watcher.py") -Encoding utf8
+
+# --- convert_pdf.py ---
+$convertPdfPy = @'
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+mark-dawn PDF converter: digital PDFs via pymupdf4llm, scanned via ocrmypdf.
+Uses environment variables for paths (portable across Windows/Linux/macOS).
+"""
+import os, sys, subprocess, tempfile
+from pathlib import Path
+import fitz
+import pymupdf4llm
+
+DATA_DIR  = Path(os.environ.get("MARK_DAWN_DATA", os.path.expanduser("~/Documents")))
+RESEARCH  = DATA_DIR / "Research"
+RESEARCH.mkdir(parents=True, exist_ok=True)
+
+file_path = Path(sys.argv[1])
+out_file  = RESEARCH / f"{file_path.stem}.md"
+
+try:
+    doc = fitz.open(str(file_path))
+    num_pages = len(doc)
+    text_len = sum(len(page.get_text()) for page in doc)
+    doc.close()
+
+    avg_chars = text_len / num_pages if num_pages > 0 else 0
+
+    if avg_chars > 100:
+        md_text = pymupdf4llm.to_markdown(str(file_path))
+        out_file.write_text(md_text, encoding="utf-8")
+        print(f"Digital PDF ({int(avg_chars)} chars/page). Converted via pymupdf4llm.")
+        sys.exit(0)
+    else:
+        print(f"Scanned PDF ({int(avg_chars)} chars/page). Falling back to ocrmypdf...")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ocr_output = Path(tmp_dir) / file_path.name
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+
+            # Direct ocrmypdf call (Tesseract + languages already in MSYS2 env)
+            cmd = [
+                "ocrmypdf",
+                "--skip-text",
+                "-l", "eng+rus+fra+deu+chi_sim+jpn",
+                "-j", "1",
+                "--output-type", "pdf",
+                str(file_path),
+                str(ocr_output)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
+            if result.returncode != 0:
+                print(f"ocrmypdf failed (exit {result.returncode}):", file=sys.stderr)
+                print(result.stderr[-1500:], file=sys.stderr)
+                sys.exit(1)
+            if not ocr_output.exists():
+                print("ocrmypdf did not produce output file", file=sys.stderr)
+                sys.exit(1)
+
+            md_text = pymupdf4llm.to_markdown(str(ocr_output))
+            out_file.write_text(md_text, encoding="utf-8")
+            print("ocrmypdf + pymupdf4llm completed successfully.")
+            sys.exit(0)
+
+except subprocess.TimeoutExpired:
+    print("Timeout: ocrmypdf took more than 10 minutes", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f"Fatal error: {e}", file=sys.stderr)
+    sys.exit(1)
+'@
+
+$convertPdfPy | Out-File -FilePath (Join-Path $SCRIPTS_DIR "convert_pdf.py") -Encoding utf8
+
+Write-OK "Python scripts generated"
 
 # ============================================================================
-# [5/7] Start Podman machine
+# [9/9] Generate launcher with Linux-compatible commands
 # ============================================================================
-Write-Step "5/7" "Starting Podman machine..."
+Write-Step "9/9" "Generating mark-dawn.bat launcher..."
 
-# Check if machine is running
-$machineStatus = podman machine list --format "{{.Running}}" 2>&1
-$isRunning = $machineStatus -eq "running" -or $machineStatus -eq "true"
+# Use Windows batch syntax; commands match Linux version (start/stop/restart/convert/logs/status/update)
+$launcher = @"
+@echo off
+setlocal enabledelayedexpansion
 
-if (-not $isRunning) {
-    Write-Info "Starting Podman machine..."
-    try {
-        podman machine start
-        if ($LASTEXITCODE -ne 0) { throw "podman machine start failed" }
-        Write-OK "Podman machine started"
-    } catch {
-        Write-Fail "Failed to start Podman machine: $_"
-        exit 1
-    }
-} else {
-    Write-OK "Podman machine already running"
-}
+REM ============================================================================
+REM mark-dawn launcher for Windows
+REM Commands match Linux version: start, stop, restart, convert, logs, status,
+REM                                update, install-task, uninstall-task, help
+REM ============================================================================
 
-# Verify connection
-try {
-    $null = podman info 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "podman info failed" }
-    Write-OK "Podman is ready"
-} catch {
-    Write-Fail "Podman not responding. Check: podman machine list"
-    exit 1
-}
+REM Resolve install directory from script location
+set "INSTALL_DIR=%~dp0"
+set "INSTALL_DIR=%INSTALL_DIR:~0,-1%"
+
+REM Generic paths (relative to install dir)
+set "MSYS2_DIR=%INSTALL_DIR%\msys2"
+set "DATA_DIR=%INSTALL_DIR%\data"
+set "SCRIPTS_DIR=%INSTALL_DIR%\scripts"
+set "LOGS_DIR=%INSTALL_DIR%\logs"
+set "PID_FILE=%INSTALL_DIR%\mark-dawn.pid"
+set "LOG_FILE=%LOGS_DIR%\mark-dawn.log"
+set "PYTHON=%MSYS2_DIR%\mingw64\bin\python.exe"
+
+REM Set environment variables consumed by Python scripts
+set "MARK_DAWN_DATA=%DATA_DIR%"
+set "MARK_DAWN_SCRIPTS=%SCRIPTS_DIR%"
+set "MARK_DAWN_LOG=%LOG_FILE%"
+set "MARK_DAWN_PID=%PID_FILE%"
+set "TESSDATA_PREFIX=%MSYS2_DIR%\mingw64\share\tessdata"
+set "PATH=%MSYS2_DIR%\mingw64\bin;%MSYS2_DIR%\usr\bin;%PATH%"
+set "PYTHONIOENCODING=utf-8"
+
+REM Ensure directories exist
+if not exist "%DATA_DIR%\Inbox" mkdir "%DATA_DIR%\Inbox"
+if not exist "%DATA_DIR%\Research" mkdir "%DATA_DIR%\Research"
+if not exist "%DATA_DIR%\Inbox_Failed" mkdir "%DATA_DIR%\Inbox_Failed"
+if not exist "%LOGS_DIR%" mkdir "%LOGS_DIR%"
+
+if "%1"=="" goto help
+if "%1"=="start" goto start
+if "%1"=="stop" goto stop
+if "%1"=="restart" goto restart
+if "%1"=="convert" goto convert
+if "%1"=="logs" goto logs
+if "%1"=="status" goto status
+if "%1"=="update" goto update
+if "%1"=="install-task" goto install_task
+if "%1"=="uninstall-task" goto uninstall_task
+if "%1"=="help" goto help
+if "%1"=="--help" goto help
+if "%1"=="-h" goto help
+goto help
+
+:start
+    echo Starting mark-dawn watcher...
+    REM Launch python in background (detached) using start /B
+    start "" /B "%PYTHON%" "%SCRIPTS_DIR%\watcher.py" >> "%LOG_FILE%" 2>&1
+    REM Give it a moment to write PID file
+    timeout /t 2 /nobreak > nul
+    if exist "%PID_FILE%" (
+        set /p PID=<"%PID_FILE%"
+        echo OK: mark-dawn started (PID !PID!)
+    ) else (
+        echo OK: mark-dawn started
+    )
+    echo    Inbox:    %DATA_DIR%\Inbox
+    echo    Research: %DATA_DIR%\Research
+    echo    Logs:     %LOG_FILE%
+    goto end
+
+:stop
+    if not exist "%PID_FILE%" (
+        echo mark-dawn is not running
+        goto end
+    )
+    set /p PID=<"%PID_FILE%"
+    echo Stopping mark-dawn (PID %PID%)...
+    taskkill /PID %PID% /F > nul 2>&1
+    del "%PID_FILE%" > nul 2>&1
+    echo OK: mark-dawn stopped
+    goto end
+
+:restart
+    call :stop
+    timeout /t 2 /nobreak > nul
+    call :start
+    goto end
+
+:convert
+    if "%2"=="" (
+        echo Usage: mark-dawn.bat convert FILE
+        exit /b 1
+    )
+    if not exist "%2" (
+        echo File not found: %2
+        exit /b 1
+    )
+    "%PYTHON%" "%SCRIPTS_DIR%\convert_pdf.py" "%~f2"
+    goto end
+
+:logs
+    if not exist "%LOG_FILE%" (
+        echo No logs yet. Start the watcher first.
+        goto end
+    )
+    echo Showing last 50 lines of %LOG_FILE% (Ctrl+C to exit)...
+    powershell -Command "Get-Content -Tail 50 -Wait -Path '%LOG_FILE%'"
+    goto end
+
+:status
+    if not exist "%PID_FILE%" (
+        echo mark-dawn is not running
+        goto end
+    )
+    set /p PID=<"%PID_FILE%"
+    tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul
+    if errorlevel 1 (
+        echo mark-dawn is not running (stale PID file, cleaning up)
+        del "%PID_FILE%" > nul 2>&1
+    ) else (
+        echo mark-dawn is running (PID %PID%)
+        echo    Inbox:    %DATA_DIR%\Inbox
+        echo    Research: %DATA_DIR%\Research
+        echo    Logs:     %LOG_FILE%
+    )
+    goto end
+
+:update
+    echo Updating MSYS2 packages and Python dependencies...
+    "%MSYS2_DIR%\usr\bin\bash.exe" -lc "pacman -Syu --noconfirm"
+    "%MSYS2_DIR%\mingw64\bin\pip.exe" install --upgrade pymupdf4llm "markitdown[all]" watchdog
+    echo OK: Update complete. Restart the watcher with: mark-dawn.bat restart
+    goto end
+
+:install_task
+    echo Creating Task Scheduler entry for auto-start on login...
+    REM This command requires administrator rights
+    net session >nul 2>&1
+    if errorlevel 1 (
+        echo FAIL: install-task requires administrator rights
+        echo Right-click PowerShell and select "Run as Administrator"
+        exit /b 1
+    )
+    schtasks /Create /TN "mark-dawn" /TR "\"%INSTALL_DIR%\mark-dawn.bat\" start" /SC ONLOGON /RL HIGHEST /F
+    schtasks /Run /TN "mark-dawn"
+    echo OK: Task Scheduler entry created and started
+    goto end
+
+:uninstall_task
+    net session >nul 2>&1
+    if errorlevel 1 (
+        echo FAIL: uninstall-task requires administrator rights
+        exit /b 1
+    )
+    schtasks /Delete /TN "mark-dawn" /F
+    echo OK: Task Scheduler entry removed
+    goto end
+
+:help
+    echo.
+    echo mark-dawn - Universal Document to Markdown Pipeline (Windows Portable)
+    echo.
+    echo Usage: mark-dawn.bat ^<command^> [args]
+    echo.
+    echo Commands:
+    echo   start              Start background watcher (watches data\Inbox)
+    echo   stop               Stop background watcher
+    echo   restart            Restart watcher
+    echo   convert FILE       Convert single file
+    echo   logs               Follow logs (last 50 lines + live tail)
+    echo   status             Show watcher status and PID
+    echo   update             Update MSYS2 packages and Python dependencies
+    echo   install-task       Install auto-start on login (requires Admin)
+    echo   uninstall-task     Remove auto-start entry (requires Admin)
+    echo   help               Show this help message
+    echo.
+    echo Supported formats: PDF, DOCX, XLSX, PPTX, HTML, CSV, RTF
+    echo Supported languages: English, Russian, French, German, Chinese, Japanese
+    echo.
+    echo Directories (relative to install root):
+    echo   data\Inbox         - Drop files here for auto-conversion
+    echo   data\Research      - Converted Markdown files appear here
+    echo   data\Inbox_Failed  - Failed conversions moved here
+    echo   logs\              - Log files
+    goto end
+
+:end
+endlocal
+exit /b 0
+"@
+
+$launcher | Out-File -FilePath $LAUNCHER_PATH -Encoding ascii
+
+Write-OK "Launcher generated: $LAUNCHER_PATH"
 
 # ============================================================================
-# [6/7] Install mark-dawn launcher
+# Final summary
 # ============================================================================
-Write-Step "6/7" "Installing mark-dawn launcher..."
-
-$binDir = Join-Path $env:USERPROFILE ".local\bin"
-New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-
-$launcherPath = Join-Path $binDir "mark-dawn.ps1"
-$launcherUrl = "https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.ps1"
-
-try {
-    Write-Info "Downloading launcher from GitHub..."
-    Invoke-WebRequest -Uri $launcherUrl -OutFile $launcherPath -UseBasicParsing
-    Unblock-File -Path $launcherPath -ErrorAction SilentlyContinue
-    Write-OK "Launcher installed: $launcherPath"
-} catch {
-    Write-Fail "Failed to download launcher: $_"
-    Write-Host "Download manually: $launcherUrl" -ForegroundColor Yellow
-    exit 1
-}
-
-# ============================================================================
-# [7/7] Start mark-dawn
-# ============================================================================
-Write-Step "7/7" "Starting mark-dawn..."
-
-try {
-    # Check execution policy
-    $policy = Get-ExecutionPolicy -Scope CurrentUser
-    if ($policy -eq "Restricted") {
-        Write-Info "Allowing local script execution..."
-        Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-        Write-OK "Execution policy set to RemoteSigned"
-    }
-    
-    # Start mark-dawn
-    Write-Info "Starting mark-dawn watcher..."
-    & $launcherPath -Command start
-    
-    Write-Host ""
-    Write-Host "========================================" -ForegroundColor Green
-    Write-Host " mark-dawn installed and started!" -ForegroundColor Green
-    Write-Host "========================================" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "Inbox:    $env:USERPROFILE\Documents\Inbox" -ForegroundColor Cyan
-    Write-Host "Research: $env:USERPROFILE\Documents\Research" -ForegroundColor Cyan
-    Write-Host "Failed:   $env:USERPROFILE\Documents\Inbox_Failed" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "Management:" -ForegroundColor Yellow
-    Write-Host "  & '$launcherPath' -Command status" -ForegroundColor White
-    Write-Host "  & '$launcherPath' -Command logs" -ForegroundColor White
-    Write-Host "  & '$launcherPath' -Command stop" -ForegroundColor White
-    Write-Host "  & '$launcherPath' -Command update" -ForegroundColor White
-    Write-Host ""
-    Write-Host "Auto-start on login:" -ForegroundColor Yellow
-    Write-Host "  & '$launcherPath' -Command install-task" -ForegroundColor White
-    Write-Host ""
-    
-} catch {
-    Write-Fail "Failed to start mark-dawn: $_"
-    exit 1
-}
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Green
+Write-Host " mark-dawn installed successfully" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+Write-Host ""
+Write-Host "Location:  $InstallDir" -ForegroundColor Cyan
+Write-Host "Launcher:  $LAUNCHER_PATH" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Next steps:" -ForegroundColor Yellow
+Write-Host "  1. Open Command Prompt or PowerShell"
+Write-Host "  2. Run:  & `"$LAUNCHER_PATH`" start"
+Write-Host "  3. Drop files into: $DATA_DIR\Inbox"
+Write-Host "  4. Results appear in: $DATA_DIR\Research"
+Write-Host ""
+Write-Host "Management commands:" -ForegroundColor Yellow
+Write-Host "  & `"$LAUNCHER_PATH`" status"
+Write-Host "  & `"$LAUNCHER_PATH`" logs"
+Write-Host "  & `"$LAUNCHER_PATH`" stop"
+Write-Host "  & `"$LAUNCHER_PATH`" update"
+Write-Host ""
+Write-Host "Auto-start on login (requires Admin):" -ForegroundColor Yellow
+Write-Host "  & `"$LAUNCHER_PATH`" install-task"
