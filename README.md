@@ -14,7 +14,7 @@ Converts PDF, DOCX, XLSX, PPTX, HTML, CSV, RTF to clean Markdown with:
 - 👁️ Folder watcher mode: drop files into Inbox, get Markdown in Research
 
 
-### Quick Start (one command)
+### Installation
 
 **Linux / macOS (Podman/Docker)**
 ```bash
