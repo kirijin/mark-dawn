@@ -3,7 +3,7 @@
 </p>
 
 # mark-dawn
-## a vibe-slopped portable ocr solutions for *nix & win
+## a vibe-slopped portable ocr solution for *nix & win
 
 **Universal Document to Markdown Pipeline** with auto-OCR for scanned PDFs.
 
