@@ -1,19 +1,16 @@
 #!/bin/bash
 set -e
 
-# Создаём рабочие директории (на случай если не смонтированы)
+# Guarantee a writable temp directory for Ghostscript/Tesseract
+mkdir -p /workspace/tmp
+export TMPDIR=/workspace/tmp
+export TEMP=/workspace/tmp
+export TMP=/workspace/tmp
+
 mkdir -p /data/Inbox /data/Research /data/Inbox_Failed
 
 case "${1:-}" in
-    watcher)
-        exec python /usr/local/bin/watcher.py
-        ;;
-    convert)
-        shift
-        [ -z "$1" ] && { echo "Usage: entrypoint.sh convert FILE"; exit 1; }
-        exec python /usr/local/bin/convert_pdf.py "$1"
-        ;;
-    *)
-        exec "$@"
-        ;;
+  watcher) exec python /usr/local/bin/watcher.py ;;
+  convert) shift; exec python /usr/local/bin/convert_pdf.py "$1" ;;
+  *) exec "$@" ;;
 esac
