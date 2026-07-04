@@ -18,7 +18,7 @@ Converts PDF, DOCX, XLSX, PPTX, HTML, CSV, RTF to clean Markdown with:
 
 ### Install it
 
-**Linux (Podman/Docker)** // ***the only working version rn***
+**Linux (Podman/Docker)** // ***the only working option rn***
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.sh | bash
 ```
