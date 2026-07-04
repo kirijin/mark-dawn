@@ -142,22 +142,54 @@ if (-not (Test-Path $bashExe)) {
 }
 
 # ============================================================================
-# [4/9] Initialize MSYS2 (first-run setup + pacman update)
+# [4/9] Initialize MSYS2 with faster mirror + update
 # ============================================================================
-Write-Step "4/9" "Initializing MSYS2 (first run, takes 3-5 minutes)..."
+Write-Step "4/9" "Initializing MSYS2 (switching to faster mirror + update)..."
 
 $bash = Join-Path $MSYS2_DIR "usr\bin\bash.exe"
 
 if (-not $SkipInit) {
     try {
+        # First run: init keys
         & $bash -lc "exit" | Out-Null
         Start-Sleep -Seconds 3
 
-        Write-Info "First pass: updating core system..."
-        & $bash -lc "pacman -Syu --noconfirm" | Out-Null
+        # Replace mirrorlist with faster mirrors (ranked by reliability)
+        Write-Info "Configuring fast mirrors (repo.msys2.org + cloudflare CDN)..."
+        $mirrorList = Join-Path $MSYS2_DIR "etc\pacman.d\mirrorlist.mingw64"
+        $fastMirrors = @'
+Server = https://repo.msys2.org/mingw/mingw64/
+Server = https://mirror.msys2.org/mingw/mingw64/
+Server = https://mirror.yandex.ru/mirrors/msys2/mingw/mingw64/
+Server = https://ftp.uni-erlangen.de/msys2/mingw/mingw64/
+'@
+        # Same for main MSYS2 mirrorlist
+        $mainMirror = Join-Path $MSYS2_DIR "etc\pacman.d\mirrorlist.msys"
+        $fastMainMirrors = @'
+Server = https://repo.msys2.org/msys/$arch/
+Server = https://mirror.msys2.org/msys/$arch/
+Server = https://mirror.yandex.ru/mirrors/msys2/msys/$arch/
+Server = https://ftp.uni-erlangen.de/msys2/msys/$arch/
+'@
+        # Same for all relevant mirrorlist files
+        foreach ($listFile in (Get-ChildItem "$MSYS2_DIR\etc\pacman.d\mirrorlist.*")) {
+            if ($listFile.Name -eq "mirrorlist.msys") {
+                $fastMainMirrors | Out-File -FilePath $listFile.FullName -Encoding ascii
+            } else {
+                $fastMirrors | Out-File -FilePath $listFile.FullName -Encoding ascii
+            }
+        }
+        Write-OK "Fast mirrors configured"
 
-        Write-Info "Second pass: updating remaining packages..."
-        & $bash -lc "pacman -Su --noconfirm" | Out-Null
+        # First pass: core system update
+        Write-Info "Pass 1: core system update (may take 3-5 minutes)..."
+        $output = & $bash -lc "pacman -Syu --noconfirm" 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Pass 1 failed: $output" }
+
+        # Second pass: remaining packages
+        Write-Info "Pass 2: remaining packages..."
+        $output = & $bash -lc "pacman -Su --noconfirm" 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Pass 2 failed: $output" }
 
         Write-OK "MSYS2 initialized"
     } catch {
@@ -166,45 +198,97 @@ if (-not $SkipInit) {
 }
 
 # ============================================================================
-# [5/9] Install Tesseract, ocrmypdf, Ghostscript, Python via pacman
+# [5/9] Install Tesseract + Ghostscript + Python via pacman
+#       NOTE: ocrmypdf is NOT in MSYS2 repos - it's installed via pip in step [6/9]
 # ============================================================================
-Write-Step "5/9" "Installing OCR stack via pacman (5-10 minutes)..."
+Write-Step "5/9" "Installing system packages (Tesseract, Ghostscript, Python)..."
 
 try {
+    # Actual available packages in MSYS2 MINGW64 repo (verified 2026)
     $packages = @(
         "mingw-w64-x86_64-tesseract-ocr",
-        "mingw-w64-x86_64-tesseract-ocr-data",
-        "mingw-w64-x86_64-ocrmypdf",
         "mingw-w64-x86_64-ghostscript",
         "mingw-w64-x86_64-python",
-        "mingw-w64-x86_64-python-pip",
-        "mingw-w64-x86_64-python-pymupdf"
+        "mingw-w64-x86_64-python-pip"
     )
     $pkgList = $packages -join " "
-    & $bash -lc "pacman -S --noconfirm --needed $pkgList" | Out-Null
-    Write-OK "OCR stack installed"
+    
+    Write-Info "Installing: $pkgList"
+    
+    # Capture output + exit code properly
+    $output = & $bash -lc "pacman -Sy --noconfirm --needed $pkgList" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "pacman output:" -ForegroundColor Yellow
+        $output | ForEach-Object { Write-Host "  $_" }
+        throw "pacman exited with code $LASTEXITCODE"
+    }
+
+    # Verify critical binaries actually exist
+    $required = @{
+        "tesseract" = (Join-Path $MSYS2_DIR "mingw64\bin\tesseract.exe")
+        "python"    = (Join-Path $MSYS2_DIR "mingw64\bin\python.exe")
+        "gs"        = (Join-Path $MSYS2_DIR "mingw64\bin\gswin64c.exe")
+    }
+    $missing = @()
+    foreach ($kv in $required.GetEnumerator()) {
+        if (-not (Test-Path $kv.Value)) {
+            $missing += "$($kv.Key) (expected: $($kv.Value))"
+        }
+    }
+    if ($missing.Count -gt 0) {
+        throw "Missing binaries after install: $($missing -join ', ')"
+    }
+
+    Write-OK "System packages installed (tesseract, python, ghostscript verified)"
 } catch {
-    Write-Fail "Failed to install packages: $_"
+    Write-Fail "Failed to install system packages: $_"
 }
 
 # ============================================================================
-# [6/9] Install Python packages via python -m pip (universal method)
+# [6/9] Install Python packages via python -m pip
+#       Includes ocrmypdf (not available via pacman)
 # ============================================================================
-Write-Step "6/9" "Installing Python packages (pymupdf4llm, markitdown, watchdog)..."
+Write-Step "6/9" "Installing Python packages via pip..."
 
 try {
     $python = Join-Path $MSYS2_DIR "mingw64\bin\python.exe"
-    
-    # Verify python exists
+
     if (-not (Test-Path $python)) {
-        Write-Fail "python.exe not found at $python. Step [5/9] may have failed."
+        Write-Fail "python.exe not found at $python. Step [5/9] must have failed."
     }
+
+    # Bootstrap pip (in case ensurepip wasn't triggered)
+    Write-Info "Ensuring pip is available..."
+    & $python -m ensurepip --upgrade 2>$null | Out-Null
+    & $python -m pip install --quiet --upgrade pip
+    if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
+
+    # Install main stack (ocrmypdf is HERE, not in pacman!)
+    $pyPackages = @(
+        "pymupdf4llm",
+        "markitdown[all]",
+        "watchdog",
+        "ocrmypdf",
+        "pikepdf",       # dependency for ocrmypdf (sometimes optional but safer to install)
+        "img2pdf"        # used by ocrmypdf for some output modes
+    )
+    Write-Info "Installing: $($pyPackages -join ', ')"
     
-    # Use 'python -m pip' instead of pip.exe directly (more reliable in MSYS2 MINGW64)
-    & $python -m pip install --quiet pymupdf4llm "markitdown[all]" watchdog
-    if ($LASTEXITCODE -ne 0) { throw "pip install exited with code $LASTEXITCODE" }
+    # Run in MINGW64 environment (PATH already contains mingw64\bin via launcher logic;
+    # here we ensure it so 'tesseract', 'gs' binaries are discoverable by ocrmypdf)
+    $env:PATH = "$MSYS2_DIR\mingw64\bin;$MSYS2_DIR\usr\bin;$env:PATH"
     
-    Write-OK "Python packages installed"
+    & $python -m pip install --quiet $pyPackages
+    if ($LASTEXITCODE -ne 0) { throw "pip install failed with code $LASTEXITCODE" }
+
+    # Verify imports
+    $imports = "import pymupdf4llm, markitdown, watchdog, ocrmypdf, pikepdf; print('all-imports-OK')"
+    $verifyOut = (& $python -c $imports 2>&1)
+    if ($verifyOut -notmatch "all-imports-OK") {
+        throw "Import verification failed: $verifyOut"
+    }
+
+    Write-OK "Python packages installed and verified (incl. ocrmypdf via pip)"
 } catch {
     Write-Fail "Failed to install Python packages: $_"
 }
