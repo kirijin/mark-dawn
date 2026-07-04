@@ -7,6 +7,7 @@ on:
       - 'Dockerfile'
       - '*.py'
       - '*.sh'
+      - 'install.ps1'
       - '.github/workflows/build.yml'
     tags: [ 'v*' ]
   workflow_dispatch:
@@ -23,7 +24,93 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    name: Validate scripts and configuration
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify all required files exist
+        run: |
+          echo "Verifying required files..."
+          files=(
+            "Dockerfile"
+            "convert_pdf.py"
+            "watcher.py"
+            "entrypoint.sh"
+            "install.ps1"
+            "README.md"
+          )
+          missing=()
+          for file in "${files[@]}"; do
+            if [ ! -f "$file" ]; then
+              missing+=("$file")
+              echo "❌ Missing: $file"
+            else
+              echo "✓ Found: $file"
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo ""
+            echo "ERROR: Missing files: ${missing[*]}"
+            exit 1
+          fi
+          echo ""
+          echo "✓ All required files present"
+
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          Write-Host "Validating PowerShell syntax for install.ps1..."
+          try {
+            $content = Get-Content -Path "install.ps1" -Raw
+            [scriptblock]::Create($content) | Out-Null
+            Write-Host "✓ PowerShell syntax valid"
+          } catch {
+            Write-Host "❌ PowerShell syntax error:"
+            Write-Host $_.Exception.Message
+            exit 1
+          }
+
+      - name: Validate Python syntax
+        run: |
+          echo "Validating Python syntax..."
+          python3 -m py_compile convert_pdf.py
+          python3 -m py_compile watcher.py
+          echo "✓ Python syntax valid"
+
+      - name: Validate shell script syntax
+        run: |
+          echo "Validating shell script syntax..."
+          bash -n entrypoint.sh
+          echo "✓ Shell script syntax valid"
+
+      - name: Check for common issues in install.ps1
+        shell: pwsh
+        run: |
+          $content = Get-Content -Path "install.ps1" -Raw
+          $issues = @()
+          
+          # Check for hardcoded paths (should use variables)
+          if ($content -match '(C:\\|D:\\|E:\\)mark-dawn') {
+            $issues += "Hardcoded drive letters found - should use `$env:USERPROFILE"
+          }
+          
+          # Check for missing error handling on critical commands
+          if ($content -match 'pacman.*\|' -and $content -notmatch '\$LASTEXITCODE') {
+            $issues += "pacman commands should have explicit error checking"
+          }
+          
+          if ($issues.Count -gt 0) {
+            Write-Host "⚠ Potential issues found:"
+            $issues | ForEach-Object { Write-Host "  - $_" }
+          } else {
+            Write-Host "✓ No common issues detected"
+          }
+
   build-and-push:
+    needs: validate
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,9 +120,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Verify files exist
-        run: ls -la Dockerfile convert_pdf.py watcher.py entrypoint.sh
 
       - name: Set up QEMU (for multi-arch builds)
         uses: docker/setup-qemu-action@v3
@@ -86,3 +170,10 @@ jobs:
 
       - name: Image digest
         run: echo "Image pushed with digest ${{ steps.build.outputs.digest }}"
+
+      - name: Build status
+        if: success()
+        run: |
+          echo "✓ Docker image built and pushed successfully"
+          echo "  Repository: ${{ env.DOCKERHUB_REPO }}"
+          echo "  Tags: ${{ steps.meta.outputs.tags }}"
