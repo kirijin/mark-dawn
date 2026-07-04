@@ -24,10 +24,9 @@ case "${1:-}" in
             --user $(id -u):$(id -g) \
             --name mark-dawn \
             --restart unless-stopped \
-            --security-opt label=disable \
-            -v "$DATA_DIR/Inbox:/data/Inbox" \
-            -v "$DATA_DIR/Research:/data/Research" \
-            -v "$DATA_DIR/Inbox_Failed:/data/Inbox_Failed" \
+            -v "$DATA_DIR/Inbox:/data/Inbox:Z" \
+            -v "$DATA_DIR/Research:/data/Research:Z" \
+            -v "$DATA_DIR/Inbox_Failed:/data/Inbox_Failed:Z" \
             "$IMAGE" watcher
         echo "OK: Watcher started"
         echo "   Inbox:    $DATA_DIR/Inbox"
@@ -52,11 +51,10 @@ case "${1:-}" in
         [ ! -f "$FILE_PATH" ] && { echo "Error: File not found: $1"; exit 1; }
         mkdir -p "$DATA_DIR/Inbox" "$DATA_DIR/Research" "$DATA_DIR/Inbox_Failed"
         $RUNTIME run --rm \
-            --security-opt label=disable \
-            -v "$DATA_DIR/Inbox:/data/Inbox" \
-            -v "$DATA_DIR/Research:/data/Research" \
-            -v "$DATA_DIR/Inbox_Failed:/data/Inbox_Failed" \
-            -v "$(dirname "$FILE_PATH"):/input" \
+            -v "$DATA_DIR/Inbox:/data/Inbox:Z" \
+            -v "$DATA_DIR/Research:/data/Research:Z" \
+            -v "$DATA_DIR/Inbox_Failed:/data/Inbox_Failed:Z" \
+            -v "$(dirname "$FILE_PATH"):/input:Z" \
             "$IMAGE" convert "/input/$(basename "$FILE_PATH")"
         ;;
     logs)    $RUNTIME logs -f mark-dawn ;;
