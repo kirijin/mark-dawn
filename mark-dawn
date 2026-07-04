@@ -21,6 +21,7 @@ case "${1:-}" in
         mkdir -p "$DATA_DIR/Inbox" "$DATA_DIR/Research" "$DATA_DIR/Inbox_Failed"
         echo "Starting mark-dawn watcher..."
         $RUNTIME run -d \
+            --user $(id -u):$(id -g) \
             --name mark-dawn \
             --restart unless-stopped \
             -v "$DATA_DIR/Inbox:/data/Inbox:Z" \
