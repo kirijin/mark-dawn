@@ -93,7 +93,7 @@ if (-not (Test-Path $bashExe)) {
     try {
         $proc = Start-Process -FilePath $sfxPath -ArgumentList "-y", "-o`"$InstallDir`"" -Wait -PassThru -NoNewWindow
         if (-not (Test-Path $bashExe)) {
-            Write-Fail "Extraction failed — bash.exe not found at $bashExe"
+            Write-Fail "Extraction failed - bash.exe not found at $bashExe"
         }
         Remove-Item $sfxPath -Force -ErrorAction SilentlyContinue
         Write-OK "MSYS2 extracted"
@@ -116,11 +116,11 @@ try {
     & $bash -lc "exit" 2>$null | Out-Null
     Start-Sleep -Seconds 3
 
-    # Initialize keyring (GPG warnings are harmless — ignore exit code)
+    # Initialize keyring (GPG warnings are harmless - ignore exit code)
     Write-Info "Initializing pacman keyring (may show GPG warnings, this is normal)..."
     & $bash -lc "pacman-key --init" 2>$null | Out-Null
     & $bash -lc "pacman-key --populate msys2" 2>$null | Out-Null
-    # Ignore $LASTEXITCODE — GPG trust-db warnings return non-zero but are not errors
+    # Ignore $LASTEXITCODE - GPG trust-db warnings return non-zero but are not errors
 
     Write-OK "MSYS2 initialized"
 } catch {
