@@ -70,43 +70,69 @@ try {
 Write-OK "Install directory: $InstallDir"
 
 # ============================================================================
-# [2/9] Download MSYS2 portable installer
+# [2/9] Download MSYS2 SFX archive (portable self-extracting)
 # ============================================================================
-Write-Step "2/9" "Downloading MSYS2 portable installer (~100 MB)..."
+Write-Step "2/9" "Downloading MSYS2 SFX archive (~100 MB)..."
 
-$msys2Installer = Join-Path $env:TEMP "msys2-installer.exe"
-$msys2Url = "https://github.com/msys2/msys2-installer/releases/download/2025-02-21/msys2-base-x86_64-latest.sfx.exe"
+$msys2Installer = Join-Path $env:TEMP "msys2-base-x86_64-latest.sfx.exe"
+# Primary: nightly (always latest). Fallback: stable release if nightly fails.
+$msys2Urls = @(
+    "https://github.com/msys2/msys2-installer/releases/download/nightly-x86_64/msys2-base-x86_64-latest.sfx.exe",
+    "https://github.com/msys2/msys2-installer/releases/download/2025-02-21/msys2-base-x86_64-latest.sfx.exe"
+)
 
 if (-not (Test-Path $msys2Installer)) {
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $msys2Url -OutFile $msys2Installer -UseBasicParsing
-    } catch {
-        Write-Fail "Failed to download MSYS2: $_"
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $downloaded = $false
+    foreach ($url in $msys2Urls) {
+        try {
+            Write-Info "Trying: $url"
+            Invoke-WebRequest -Uri $url -OutFile $msys2Installer -UseBasicParsing
+            # Sanity check: SFX should be > 50 MB
+            if ((Get-Item $msys2Installer).Length -gt 50MB) {
+                $downloaded = $true
+                break
+            } else {
+                Remove-Item $msys2Installer -Force
+            }
+        } catch {
+            Write-Info "Failed, trying fallback..."
+            Remove-Item $msys2Installer -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if (-not $downloaded) {
+        Write-Fail "Failed to download MSYS2 from all mirrors"
     }
 }
-Write-OK "MSYS2 installer ready"
+Write-OK "MSYS2 SFX archive ready"
 
 # ============================================================================
-# [3/9] Extract MSYS2 to portable directory
+# [3/9] Extract MSYS2 silently via SFX (-y = auto-confirm, -o = output dir)
 # ============================================================================
-Write-Step "3/9" "Extracting MSYS2 (this takes 2-5 minutes)..."
+Write-Step "3/9" "Extracting MSYS2 (this takes 2-3 minutes)..."
 
 $bashExe = Join-Path $MSYS2_DIR "usr\bin\bash.exe"
 if (-not (Test-Path $bashExe)) {
     try {
-        $parentDir = Split-Path $InstallDir -Parent
-        $tempExtract = Join-Path $parentDir "msys2_extract"
-        New-Item -ItemType Directory -Force -Path $tempExtract | Out-Null
-
-        $proc = Start-Process -FilePath $msys2Installer -ArgumentList "-y", "-o`"$tempExtract`"" -Wait -PassThru -NoNewWindow
-        if ($proc.ExitCode -ne 0) { throw "Extraction failed with code $($proc.ExitCode)" }
-
-        $extracted = Join-Path $tempExtract "msys2"
-        if (Test-Path $extracted) {
-            Move-Item -Path $extracted -Destination $MSYS2_DIR -Force
-            Remove-Item -Path $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
+        # SFX creates 'msys2' subfolder inside -o target, so point -o to InstallDir
+        $sfxArgs = @("-y", "-o`"$InstallDir`"")
+        Write-Info "Running: $msys2Installer $sfxArgs"
+        
+        $proc = Start-Process -FilePath $msys2Installer `
+            -ArgumentList $sfxArgs `
+            -Wait -PassThru -NoNewWindow
+        if ($proc.ExitCode -ne 0) {
+            throw "SFX extraction failed with code $($proc.ExitCode)"
         }
+        
+        # Verify extraction produced expected structure
+        if (-not (Test-Path $bashExe)) {
+            throw "bash.exe not found after extraction at $bashExe"
+        }
+        
+        # Cleanup the SFX installer (no longer needed)
+        Remove-Item $msys2Installer -Force -ErrorAction SilentlyContinue
+        
         Write-OK "MSYS2 extracted to $MSYS2_DIR"
     } catch {
         Write-Fail "Failed to extract MSYS2: $_"
