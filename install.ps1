@@ -142,55 +142,58 @@ if (-not (Test-Path $bashExe)) {
 }
 
 # ============================================================================
-# [4/9] Initialize MSYS2 with faster mirror + update
+# [4/9] Initialize MSYS2 (first-run + update with retry)
 # ============================================================================
-Write-Step "4/9" "Initializing MSYS2 (switching to faster mirror + update)..."
+Write-Step "4/9" "Initializing MSYS2 (first run + update, may take 5-10 min)..."
 
 $bash = Join-Path $MSYS2_DIR "usr\bin\bash.exe"
 
 if (-not $SkipInit) {
     try {
-        # First run: init keys
+        # First run: initialize pacman keyring + user profile
+        Write-Info "First run: initializing MSYS2 environment..."
         & $bash -lc "exit" | Out-Null
-        Start-Sleep -Seconds 3
+        Start-Sleep -Seconds 5
 
-        # Replace mirrorlist with faster mirrors (ranked by reliability)
-        Write-Info "Configuring fast mirrors (repo.msys2.org + cloudflare CDN)..."
-        $mirrorList = Join-Path $MSYS2_DIR "etc\pacman.d\mirrorlist.mingw64"
-        $fastMirrors = @'
-Server = https://repo.msys2.org/mingw/mingw64/
-Server = https://mirror.msys2.org/mingw/mingw64/
-Server = https://mirror.yandex.ru/mirrors/msys2/mingw/mingw64/
-Server = https://ftp.uni-erlangen.de/msys2/mingw/mingw64/
-'@
-        # Same for main MSYS2 mirrorlist
-        $mainMirror = Join-Path $MSYS2_DIR "etc\pacman.d\mirrorlist.msys"
-        $fastMainMirrors = @'
-Server = https://repo.msys2.org/msys/$arch/
-Server = https://mirror.msys2.org/msys/$arch/
-Server = https://mirror.yandex.ru/mirrors/msys2/msys/$arch/
-Server = https://ftp.uni-erlangen.de/msys2/msys/$arch/
-'@
-        # Same for all relevant mirrorlist files
-        foreach ($listFile in (Get-ChildItem "$MSYS2_DIR\etc\pacman.d\mirrorlist.*")) {
-            if ($listFile.Name -eq "mirrorlist.msys") {
-                $fastMainMirrors | Out-File -FilePath $listFile.FullName -Encoding ascii
+        # Refresh keys (sometimes needed after long inactivity)
+        Write-Info "Refreshing pacman keyring..."
+        & $bash -lc "pacman-key --init" 2>&1 | Out-Null
+        & $bash -lc "pacman-key --populate msys2" 2>&1 | Out-Null
+
+        # Pass 1: core system update (may require double-pass on fresh MSYS2)
+        # --disable-download-timeout fixes "Operation too slow" errors
+        # DO NOT touch mirrorlist files - defaults are correct
+        Write-Info "Pass 1: core system update..."
+        $retryCount = 0
+        $maxRetries = 3
+        while ($retryCount -lt $maxRetries) {
+            $output = & $bash -lc "pacman -Syu --noconfirm --disable-download-timeout" 2>&1
+            if ($LASTEXITCODE -eq 0) { break }
+            $retryCount++
+            if ($retryCount -lt $maxRetries) {
+                Write-Info "Pass 1 failed (attempt $retryCount/$maxRetries), retrying in 10s..."
+                Start-Sleep -Seconds 10
             } else {
-                $fastMirrors | Out-File -FilePath $listFile.FullName -Encoding ascii
+                throw "Pass 1 failed after $maxRetries attempts: $output"
             }
         }
-        Write-OK "Fast mirrors configured"
+        Write-OK "Pass 1 complete"
 
-        # First pass: core system update
-        Write-Info "Pass 1: core system update (may take 3-5 minutes)..."
-        $output = & $bash -lc "pacman -Syu --noconfirm" 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "Pass 1 failed: $output" }
-
-        # Second pass: remaining packages
+        # Pass 2: remaining packages
         Write-Info "Pass 2: remaining packages..."
-        $output = & $bash -lc "pacman -Su --noconfirm" 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "Pass 2 failed: $output" }
-
+        $retryCount = 0
+        while ($retryCount -lt $maxRetries) {
+            $output = & $bash -lc "pacman -Su --noconfirm --disable-download-timeout" 2>&1
+            if ($LASTEXITCODE -eq 0) { break }
+            $retryCount++
+            if ($retryCount -lt $maxRetries) {
+                Write-Info "Pass 2 failed (attempt $retryCount/$maxRetries), retrying in 10s..."
+                Start-Sleep -Seconds 10
+            } else {
+                Write-Host "Warning: Pass 2 failed, continuing anyway..." -ForegroundColor Yellow
+                break
+            }
+        }
         Write-OK "MSYS2 initialized"
     } catch {
         Write-Fail "MSYS2 initialization failed: $_"
