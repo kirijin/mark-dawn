@@ -30,7 +30,7 @@ function Write-Fail  { param([string]$m) Write-Host "FAIL: $m" -ForegroundColor 
 function Show-Help {
     Write-Host "mark-dawn portable installer for Windows" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "Usage: install-msys2.ps1 [-InstallDir <path>] [-SkipInit] [-Help]"
+    Write-Host "Usage: install.ps1 [-InstallDir <path>] [-SkipInit] [-Help]"
     Write-Host ""
     Write-Host "Parameters:"
     Write-Host "  -InstallDir   Custom installation directory (default: %USERPROFILE%\mark-dawn)"
