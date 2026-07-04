@@ -2,6 +2,8 @@
   <img src="https://raw.githubusercontent.com/kirijin/mark-dawn/main/logo.png" width="200">
 </p>
 
+# !BEWARE! SLOPPING IS IN PROGRESS. SUBJECT TO CONSTALNT CHANGE UNTIL "AT LEAST WORKS"
+
 ## **mark-dawn**
 ***a vibe-slopped portable ocr solution for nix & win***
 
