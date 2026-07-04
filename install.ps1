@@ -142,58 +142,83 @@ if (-not (Test-Path $bashExe)) {
 }
 
 # ============================================================================
-# [4/9] Initialize MSYS2 (first-run + update with retry)
+# [4/9] Initialize MSYS2 (disable ARM64 repos + fix mirrorlist)
 # ============================================================================
-Write-Step "4/9" "Initializing MSYS2 (first run + update, may take 5-10 min)..."
+Write-Step "4/9" "Initializing MSYS2 (disabling ARM64 repos + fixing mirrorlist)..."
 
 $bash = Join-Path $MSYS2_DIR "usr\bin\bash.exe"
 
 if (-not $SkipInit) {
     try {
-        # First run: initialize pacman keyring + user profile
+        # First run: initialize
         Write-Info "First run: initializing MSYS2 environment..."
         & $bash -lc "exit" | Out-Null
         Start-Sleep -Seconds 5
 
-        # Refresh keys (sometimes needed after long inactivity)
+# Ensure correct Include lines are uncommented for needed repos
+Write-Info "Configuring pacman.conf..."
+& $bash -lc "
+# Fix mingw64 section - uncomment Include and set correct mirrorlist path
+awk '
+  BEGIN { in_mingw64=0; in_ucrt64=0; in_clang64=0; in_msys=0 }
+  /^\[mingw64\]$/ { in_mingw64=1; print; next }
+  /^\[ucrt64\]$/  { in_ucrt64=1; print; next }
+  /^\[clang64\]$/ { in_clang64=1; print; next }
+  /^\[msys\]$/    { in_msys=1; print; next }
+  /^\[/           { in_mingw64=0; in_ucrt64=0; in_clang64=0; in_msys=0; print; next }
+  in_mingw64 && /^#?Include = .*mirrorlist/ { print \"Include = /etc/pacman.d/mirrorlist.mingw64\"; next }
+  in_ucrt64  && /^#?Include = .*mirrorlist/ { print \"Include = /etc/pacman.d/mirrorlist.ucrt64\"; next }
+  in_clang64 && /^#?Include = .*mirrorlist/ { print \"Include = /etc/pacman.d/mirrorlist.clang64\"; next }
+  { print }
+' /etc/pacman.conf > /tmp/pacman.conf && mv /tmp/pacman.conf /etc/pacman.conf
+" | Out-Null
+
+        # Restore correct mirrorlist files
+        Write-Info "Restoring correct mirrorlist files..."
+        & $bash -lc "
+cat > /etc/pacman.d/mirrorlist.mingw64 << 'EOF'
+Server = https://repo.msys2.org/mingw/mingw64/
+Server = https://mirror.msys2.org/mingw/mingw64/
+Server = https://mirror.yandex.ru/mirrors/msys2/mingw/mingw64/
+EOF
+
+cat > /etc/pacman.d/mirrorlist.ucrt64 << 'EOF'
+Server = https://repo.msys2.org/mingw/ucrt64/
+Server = https://mirror.msys2.org/mingw/ucrt64/
+Server = https://mirror.yandex.ru/mirrors/msys2/mingw/ucrt64/
+EOF
+
+cat > /etc/pacman.d/mirrorlist.clang64 << 'EOF'
+Server = https://repo.msys2.org/mingw/clang64/
+Server = https://mirror.msys2.org/mingw/clang64/
+Server = https://mirror.yandex.ru/mirrors/msys2/mingw/clang64/
+EOF
+
+cat > /etc/pacman.d/mirrorlist.msys << 'EOF'
+Server = https://repo.msys2.org/msys/x86_64/
+Server = https://mirror.msys2.org/msys/x86_64/
+Server = https://mirror.yandex.ru/mirrors/msys2/msys/x86_64/
+EOF
+" | Out-Null
+
+        # Refresh keys
         Write-Info "Refreshing pacman keyring..."
         & $bash -lc "pacman-key --init" 2>&1 | Out-Null
         & $bash -lc "pacman-key --populate msys2" 2>&1 | Out-Null
 
-        # Pass 1: core system update (may require double-pass on fresh MSYS2)
-        # --disable-download-timeout fixes "Operation too slow" errors
-        # DO NOT touch mirrorlist files - defaults are correct
+        # Pass 1: core system update
         Write-Info "Pass 1: core system update..."
-        $retryCount = 0
-        $maxRetries = 3
-        while ($retryCount -lt $maxRetries) {
-            $output = & $bash -lc "pacman -Syu --noconfirm --disable-download-timeout" 2>&1
-            if ($LASTEXITCODE -eq 0) { break }
-            $retryCount++
-            if ($retryCount -lt $maxRetries) {
-                Write-Info "Pass 1 failed (attempt $retryCount/$maxRetries), retrying in 10s..."
-                Start-Sleep -Seconds 10
-            } else {
-                throw "Pass 1 failed after $maxRetries attempts: $output"
-            }
+        $output = & $bash -lc "pacman -Syu --noconfirm --disable-download-timeout" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "pacman output:" -ForegroundColor Yellow
+            $output | ForEach-Object { Write-Host "  $_" }
+            throw "Pass 1 failed"
         }
         Write-OK "Pass 1 complete"
 
         # Pass 2: remaining packages
         Write-Info "Pass 2: remaining packages..."
-        $retryCount = 0
-        while ($retryCount -lt $maxRetries) {
-            $output = & $bash -lc "pacman -Su --noconfirm --disable-download-timeout" 2>&1
-            if ($LASTEXITCODE -eq 0) { break }
-            $retryCount++
-            if ($retryCount -lt $maxRetries) {
-                Write-Info "Pass 2 failed (attempt $retryCount/$maxRetries), retrying in 10s..."
-                Start-Sleep -Seconds 10
-            } else {
-                Write-Host "Warning: Pass 2 failed, continuing anyway..." -ForegroundColor Yellow
-                break
-            }
-        }
+        & $bash -lc "pacman -Su --noconfirm --disable-download-timeout" 2>&1 | Out-Null
         Write-OK "MSYS2 initialized"
     } catch {
         Write-Fail "MSYS2 initialization failed: $_"
