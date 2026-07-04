@@ -53,7 +53,7 @@ if ($resolvedPath) {
     $InstallDir = $resolvedPath.Path
 }
 
-$MSYS2_DIR     = Join-Path $InstallDir "msys2"
+$MSYS2_DIR     = Join-Path $InstallDir "msys64"
 $DATA_DIR      = Join-Path $InstallDir "data"
 $SCRIPTS_DIR   = Join-Path $InstallDir "scripts"
 $LOGS_DIR      = Join-Path $InstallDir "logs"
@@ -454,7 +454,7 @@ setlocal enabledelayedexpansion
 set "INSTALL_DIR=%~dp0"
 set "INSTALL_DIR=%INSTALL_DIR:~0,-1%"
 
-set "MSYS2_DIR=%INSTALL_DIR%\msys2"
+set "MSYS2_DIR=%INSTALL_DIR%\msys64"
 set "DATA_DIR=%INSTALL_DIR%\data"
 set "SCRIPTS_DIR=%INSTALL_DIR%\scripts"
 set "LOGS_DIR=%INSTALL_DIR%\logs"
