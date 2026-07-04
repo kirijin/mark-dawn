@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.sh
 chmod +x mark-dawn
 ./mark-dawn start
 ```
-### Windows (PowerShell) (HEAVY WIP - BROKEN)
+### Windows (PowerShell) (BROKEN. SLOP in PROGRESS)
 ```powershell
 iwr -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.ps1" -OutFile mark-dawn.ps1
 .\mark-dawn.ps1 -Command start
