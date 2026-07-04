@@ -2,10 +2,12 @@
 .SYNOPSIS
     mark-dawn portable installer for Windows (MSYS2-based, no WSL required)
 .DESCRIPTION
-    Installs mark-dawn as a fully portable application in %USERPROFILE%\mark-dawn.
-    Compatible with Windows PowerShell 5.1 (default) and PowerShell 7+.
+    One-command install of mark-dawn as a fully portable application.
+    No administrator rights required (except for install-task).
+    No WSL, no VM, no Docker.
 .NOTES
-    Requires: Windows 10/11 x64. No admin rights required (except for install-task).
+    Supports Windows 10/11 x64. PowerShell 5.1+ compatible.
+    All output in English for automation compatibility.
 #>
 
 param(
@@ -17,7 +19,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 # ============================================================================
-# Helper functions (English messages, PS 5.1 compatible)
+# Helper functions
 # ============================================================================
 function Write-Step  { param([string]$n,[string]$m) Write-Host "[$n] " -ForegroundColor Cyan -NoNewline; Write-Host $m }
 function Write-OK    { param([string]$m) Write-Host "OK: $m" -ForegroundColor Green }
@@ -38,16 +40,20 @@ function Show-Help {
 
 if ($Help) { Show-Help }
 
+function Test-Administrator {
+    $currentUser = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    return $currentUser.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 # ============================================================================
-# [1/9] Resolve installation directory (generic, no admin required)
+# [1/10] Resolve installation directory (no admin required)
 # ============================================================================
-Write-Step "1/9" "Resolving installation directory..."
+Write-Step "1/10" "Resolving installation directory..."
 
 if (-not $InstallDir) {
     $InstallDir = Join-Path $env:USERPROFILE "mark-dawn"
 }
 
-# PS 5.1 compatible: no ?? operator
 $resolvedPath = Resolve-Path $InstallDir -ErrorAction SilentlyContinue
 if ($resolvedPath) {
     $InstallDir = $resolvedPath.Path
@@ -70,12 +76,11 @@ try {
 Write-OK "Install directory: $InstallDir"
 
 # ============================================================================
-# [2/9] Download MSYS2 SFX archive (portable self-extracting)
+# [2/10] Download MSYS2 SFX archive
 # ============================================================================
-Write-Step "2/9" "Downloading MSYS2 SFX archive (~100 MB)..."
+Write-Step "2/10" "Downloading MSYS2 SFX archive (~100 MB)..."
 
 $msys2Installer = Join-Path $env:TEMP "msys2-base-x86_64-latest.sfx.exe"
-# Primary: nightly (always latest). Fallback: stable release if nightly fails.
 $msys2Urls = @(
     "https://github.com/msys2/msys2-installer/releases/download/nightly-x86_64/msys2-base-x86_64-latest.sfx.exe",
     "https://github.com/msys2/msys2-installer/releases/download/2025-02-21/msys2-base-x86_64-latest.sfx.exe"
@@ -88,12 +93,11 @@ if (-not (Test-Path $msys2Installer)) {
         try {
             Write-Info "Trying: $url"
             Invoke-WebRequest -Uri $url -OutFile $msys2Installer -UseBasicParsing
-            # Sanity check: SFX should be > 50 MB
             if ((Get-Item $msys2Installer).Length -gt 50MB) {
                 $downloaded = $true
                 break
             } else {
-                Remove-Item $msys2Installer -Force
+                Remove-Item $msys2Installer -Force -ErrorAction SilentlyContinue
             }
         } catch {
             Write-Info "Failed, trying fallback..."
@@ -107,32 +111,25 @@ if (-not (Test-Path $msys2Installer)) {
 Write-OK "MSYS2 SFX archive ready"
 
 # ============================================================================
-# [3/9] Extract MSYS2 silently via SFX (-y = auto-confirm, -o = output dir)
+# [3/10] Extract MSYS2 silently via SFX
 # ============================================================================
-Write-Step "3/9" "Extracting MSYS2 (this takes 2-3 minutes)..."
+Write-Step "3/10" "Extracting MSYS2 (this takes 2-3 minutes)..."
 
 $bashExe = Join-Path $MSYS2_DIR "usr\bin\bash.exe"
 if (-not (Test-Path $bashExe)) {
     try {
-        # SFX creates 'msys2' subfolder inside -o target, so point -o to InstallDir
         $sfxArgs = @("-y", "-o`"$InstallDir`"")
         Write-Info "Running: $msys2Installer $sfxArgs"
-        
         $proc = Start-Process -FilePath $msys2Installer `
             -ArgumentList $sfxArgs `
             -Wait -PassThru -NoNewWindow
         if ($proc.ExitCode -ne 0) {
             throw "SFX extraction failed with code $($proc.ExitCode)"
         }
-        
-        # Verify extraction produced expected structure
         if (-not (Test-Path $bashExe)) {
             throw "bash.exe not found after extraction at $bashExe"
         }
-        
-        # Cleanup the SFX installer (no longer needed)
         Remove-Item $msys2Installer -Force -ErrorAction SilentlyContinue
-        
         Write-OK "MSYS2 extracted to $MSYS2_DIR"
     } catch {
         Write-Fail "Failed to extract MSYS2: $_"
@@ -142,22 +139,11 @@ if (-not (Test-Path $bashExe)) {
 }
 
 # ============================================================================
-# [4/9] Initialize MSYS2 (create clean pacman.conf + mirrorlists)
+# [4/10] Create clean pacman.conf (only msys + mingw64)
 # ============================================================================
-Write-Step "4/9" "Initializing MSYS2 (creating clean config)..."
+Write-Step "4/10" "Creating clean pacman.conf..."
 
-$bash = Join-Path $MSYS2_DIR "usr\bin\bash.exe"
-
-if (-not $SkipInit) {
-    try {
-        # First run: initialize pacman keyring
-        Write-Info "First run: initializing MSYS2 environment..."
-        & $bash -lc "exit" | Out-Null
-        Start-Sleep -Seconds 5
-
-        # Overwrite pacman.conf with minimal clean config (no awk, no complex quoting)
-        Write-Info "Creating clean pacman.conf (msys + mingw64 only)..."
-        $pacmanConf = @"
+$pacmanConf = @"
 [options]
 HoldPkg     = pacman
 Architecture = auto
@@ -173,44 +159,78 @@ Include = /etc/pacman.d/mirrorlist.msys
 [mingw64]
 Include = /etc/pacman.d/mirrorlist.mingw64
 "@
-        # Write via PowerShell file API (avoids bash quoting hell)
-        $pacmanConfPath = Join-Path $MSYS2_DIR "etc\pacman.conf"
-        [System.IO.File]::WriteAllText($pacmanConfPath, $pacmanConf, [System.Text.UTF8Encoding]::new($false))
-        Write-OK "pacman.conf created"
 
-        # Create mirrorlist.msys
-        Write-Info "Creating mirrorlist files..."
-        $msysMirror = @"
+$pacmanConfPath = Join-Path $MSYS2_DIR "etc\pacman.conf"
+[System.IO.File]::WriteAllText($pacmanConfPath, $pacmanConf, [System.Text.UTF8Encoding]::new($false))
+Write-OK "pacman.conf created"
+
+# ============================================================================
+# [5/10] Create mirrorlist files
+# ============================================================================
+Write-Step "5/10" "Creating mirrorlist files..."
+
+$msysMirror = @"
 Server = https://repo.msys2.org/msys/x86_64/
 Server = https://mirror.msys2.org/msys/x86_64/
 Server = https://mirror.yandex.ru/mirrors/msys2/msys/x86_64/
 "@
-        [System.IO.File]::WriteAllText((Join-Path $MSYS2_DIR "etc\pacman.d\mirrorlist.msys"), $msysMirror, [System.Text.UTF8Encoding]::new($false))
+[System.IO.File]::WriteAllText((Join-Path $MSYS2_DIR "etc\pacman.d\mirrorlist.msys"), $msysMirror, [System.Text.UTF8Encoding]::new($false))
 
-        # Create mirrorlist.mingw64
-        $mingw64Mirror = @"
+$mingw64Mirror = @"
 Server = https://repo.msys2.org/mingw/mingw64/
 Server = https://mirror.msys2.org/mingw/mingw64/
 Server = https://mirror.yandex.ru/mirrors/msys2/mingw/mingw64/
 "@
-        [System.IO.File]::WriteAllText((Join-Path $MSYS2_DIR "etc\pacman.d\mirrorlist.mingw64"), $mingw64Mirror, [System.Text.UTF8Encoding]::new($false))
-        Write-OK "Mirrorlist files created"
+[System.IO.File]::WriteAllText((Join-Path $MSYS2_DIR "etc\pacman.d\mirrorlist.mingw64"), $mingw64Mirror, [System.Text.UTF8Encoding]::new($false))
 
-        # Refresh keyring
+# Remove any stale mirrorlist files from previous runs
+Remove-Item (Join-Path $MSYS2_DIR "etc\pacman.d\mirrorlist.clang64") -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $MSYS2_DIR "etc\pacman.d\mirrorlist.clangarm64") -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $MSYS2_DIR "etc\pacman.d\mirrorlist.ucrt64") -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $MSYS2_DIR "etc\pacman.d\mirrorlist.mingw32") -Force -ErrorAction SilentlyContinue
+
+Write-OK "Mirrorlist files created"
+
+# ============================================================================
+# [6/10] Initialize MSYS2 (keyring + system update)
+# ============================================================================
+Write-Step "6/10" "Initializing MSYS2 (first run + update, may take 5-10 min)..."
+
+$bash = Join-Path $MSYS2_DIR "usr\bin\bash.exe"
+
+if (-not $SkipInit) {
+    try {
+        # First run: initialize user profile
+        Write-Info "First run: initializing MSYS2 environment..."
+        & $bash -lc "exit" | Out-Null
+        Start-Sleep -Seconds 5
+
+        # Refresh keys (ignore GPG warnings about trust database)
         Write-Info "Refreshing pacman keyring..."
         & $bash -lc "pacman-key --init" 2>&1 | Out-Null
         & $bash -lc "pacman-key --populate msys2" 2>&1 | Out-Null
+        # NOTE: GPG warnings about trust database expiry are harmless - ignore exit code
 
-        # Pass 1: core update
+        # Pass 1: core system update with disabled download timeout
         Write-Info "Pass 1: core system update..."
-        $output = & $bash -lc "pacman -Syu --noconfirm --disable-download-timeout" 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "Pass 1 output: $output" -ForegroundColor Yellow
-            throw "Pass 1 failed"
+        $retryCount = 0
+        $maxRetries = 3
+        while ($retryCount -lt $maxRetries) {
+            $output = & $bash -lc "pacman -Syu --noconfirm --disable-download-timeout" 2>&1
+            if ($LASTEXITCODE -eq 0) { break }
+            $retryCount++
+            if ($retryCount -lt $maxRetries) {
+                Write-Info "Pass 1 failed (attempt $retryCount/$maxRetries), retrying in 10s..."
+                Start-Sleep -Seconds 10
+            } else {
+                Write-Host "Pass 1 output:" -ForegroundColor Yellow
+                $output | Select-Object -Last 20 | ForEach-Object { Write-Host "  $_" }
+                throw "Pass 1 failed after $maxRetries attempts"
+            }
         }
         Write-OK "Pass 1 complete"
 
-        # Pass 2: remaining
+        # Pass 2: remaining packages (non-fatal if fails)
         Write-Info "Pass 2: remaining packages..."
         & $bash -lc "pacman -Su --noconfirm --disable-download-timeout" 2>&1 | Out-Null
         Write-OK "MSYS2 initialized"
@@ -220,70 +240,138 @@ Server = https://mirror.yandex.ru/mirrors/msys2/mingw/mingw64/
 }
 
 # ============================================================================
-# [5/9] Install system packages (tesseract, ghostscript, python, pip)
+# [7/10] Install system packages (tesseract, ghostscript, python, pip)
 # ============================================================================
-Write-Step "5/9" "Installing system packages..."
+Write-Step "7/10" "Installing system packages..."
 try {
-    & $bash -lc "pacman -S --noconfirm --needed mingw-w64-x86_64-tesseract-ocr mingw-w64-x86_64-ghostscript mingw-w64-x86_64-python mingw-w64-x86_64-python-pip"
-    if ($LASTEXITCODE -ne 0) { throw "pacman install failed" }
-    Write-OK "System packages installed"
+    $packages = "mingw-w64-x86_64-tesseract-ocr mingw-w64-x86_64-ghostscript mingw-w64-x86_64-python mingw-w64-x86_64-python-pip"
+    $output = & $bash -lc "pacman -S --noconfirm --needed $packages" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "pacman output:" -ForegroundColor Yellow
+        $output | Select-Object -Last 20 | ForEach-Object { Write-Host "  $_" }
+        throw "pacman install failed"
+    }
+
+    # Verify critical binaries
+    $required = @{
+        "tesseract" = (Join-Path $MSYS2_DIR "mingw64\bin\tesseract.exe")
+        "python"    = (Join-Path $MSYS2_DIR "mingw64\bin\python.exe")
+        "gswin64c"  = (Join-Path $MSYS2_DIR "mingw64\bin\gswin64c.exe")
+    }
+    $missing = @()
+    foreach ($kv in $required.GetEnumerator()) {
+        if (-not (Test-Path $kv.Value)) {
+            $missing += "$($kv.Key) (expected: $($kv.Value))"
+        }
+    }
+    if ($missing.Count -gt 0) {
+        throw "Missing binaries after install: $($missing -join ', ')"
+    }
+
+    Write-OK "System packages installed (tesseract, python, ghostscript verified)"
 } catch {
     Write-Fail "Failed to install system packages: $_"
 }
 
 # ============================================================================
-# [6/9] Install Python packages via pip (pymupdf, ocrmypdf, etc.)
+# [8/10] Install Python packages via pip (with --break-system-packages)
 # ============================================================================
-Write-Step "6/9" "Installing Python packages via pip..."
+Write-Step "8/10" "Installing Python packages via pip..."
 try {
-    & $bash -lc "/mingw64/bin/python -m pip install --no-cache-dir pymupdf4llm 'markitdown[all]' watchdog ocrmypdf pikepdf img2pdf"
-    if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+    $python = Join-Path $MSYS2_DIR "mingw64\bin\python.exe"
+
+    if (-not (Test-Path $python)) {
+        Write-Fail "python.exe not found at $python. Step [7/10] must have failed."
+    }
+
+    # Bootstrap pip (in case ensurepip wasn't triggered)
+    Write-Info "Ensuring pip is available..."
+    & $bash -lc "/mingw64/bin/python -m ensurepip --upgrade" 2>&1 | Out-Null
+    & $bash -lc "/mingw64/bin/python -m pip install --upgrade pip --break-system-packages" 2>&1 | Out-Null
+
+    # Install main packages with --break-system-packages (PEP 668 workaround)
+    $pyPackages = "pymupdf4llm 'markitdown[all]' watchdog ocrmypdf pikepdf img2pdf"
+    Write-Info "Installing: $pyPackages"
+    $output = & $bash -lc "/mingw64/bin/python -m pip install --no-cache-dir --break-system-packages $pyPackages" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "pip output:" -ForegroundColor Yellow
+        $output | Select-Object -Last 20 | ForEach-Object { Write-Host "  $_" }
+        throw "pip install failed"
+    }
 
     # Verify imports
-    $verify = & $bash -lc "/mingw64/bin/python -c 'import pymupdf4llm, markitdown, watchdog, ocrmypdf; print(\"OK\")'" 2>&1
-    if ($verify -notmatch "OK") { throw "Import verification failed: $verify" }
-    Write-OK "Python packages installed and verified"
+    $verifyOut = & $bash -lc "/mingw64/bin/python -c 'import pymupdf4llm, markitdown, watchdog, ocrmypdf; print(\"all-imports-OK\")'" 2>&1
+    if ($verifyOut -notmatch "all-imports-OK") {
+        throw "Import verification failed: $verifyOut"
+    }
+
+    Write-OK "Python packages installed and verified (incl. ocrmypdf via pip)"
 } catch {
     Write-Fail "Failed to install Python packages: $_"
 }
 
 # ============================================================================
-# [7/9] Download Tesseract language models (6 languages)
+# [9/10] Download Tesseract language models (6 languages)
 # ============================================================================
-Write-Step "7/9" "Downloading language models (eng, rus, fra, deu, chi_sim, jpn)..."
-$tessdata = Join-Path $MSYS2_DIR "mingw64\share\tessdata"
+Write-Step "9/10" "Downloading language models (eng, rus, fra, deu, chi_sim, jpn)..."
+
+if (-not (Test-Path $TESSDATA_DIR)) {
+    New-Item -ItemType Directory -Force -Path $TESSDATA_DIR | Out-Null
+}
+
+$languages = @("eng","rus","fra","deu","chi_sim","jpn")
 $baseUrl = "https://github.com/tesseract-ocr/tessdata/raw/main"
-foreach ($lang in @("eng","rus","fra","deu","chi_sim","jpn")) {
-    $dest = Join-Path $tessdata "$lang.traineddata"
-    if (-not (Test-Path $dest) -or (Get-Item $dest).Length -lt 1MB) {
+
+foreach ($lang in $languages) {
+    $dest = Join-Path $TESSDATA_DIR "$lang.traineddata"
+    $needsDownload = $false
+
+    if (-not (Test-Path $dest)) {
+        $needsDownload = $true
+    } else {
+        $fileSize = (Get-Item $dest).Length
+        if ($fileSize -lt 1MB) {
+            $needsDownload = $true
+        }
+    }
+
+    if ($needsDownload) {
         Write-Info "Downloading $lang..."
-        Invoke-WebRequest -Uri "$baseUrl/$lang.traineddata" -OutFile $dest -UseBasicParsing
+        try {
+            Invoke-WebRequest -Uri "$baseUrl/$lang.traineddata" -OutFile $dest -UseBasicParsing
+        } catch {
+            Write-Host "WARNING: Failed to download $lang" -ForegroundColor Yellow
+        }
     }
 }
 Write-OK "Language models ready"
 
 # ============================================================================
-# [8/9] Generate Python scripts
+# [10/10] Generate watcher.py, convert_pdf.py, launcher.bat
 # ============================================================================
-Write-Step "8/9" "Generating watcher.py and convert_pdf.py..."
+Write-Step "10/10" "Generating Python scripts and launcher..."
 
-# watcher.py content
+# --- watcher.py (native Windows paths via env vars) ---
 $watcherPy = @'
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+"""
+mark-dawn watcher: monitors Inbox folder and converts new files to Markdown.
+Native Windows version - uses MARK_DAWN_* env vars for paths.
+"""
 import os, sys, time, subprocess
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-DATA_DIR     = Path(os.environ.get("MARK_DAWN_DATA", os.path.expanduser("~/Documents")))
-INBOX        = DATA_DIR / "Inbox"
-RESEARCH     = DATA_DIR / "Research"
-FAILED       = DATA_DIR / "Inbox_Failed"
-SCRIPTS_DIR  = Path(os.environ.get("MARK_DAWN_SCRIPTS", Path(__file__).parent))
-LOG_FILE     = Path(os.environ.get("MARK_DAWN_LOG", SCRIPTS_DIR.parent / "logs" / "mark-dawn.log"))
+DATA_DIR     = Path(os.environ.get("MARK_DAWN_DATA", os.path.expanduser("~/mark-dawn/data")))
+SCRIPTS_DIR  = Path(os.environ.get("MARK_DAWN_SCRIPTS", DATA_DIR.parent / "scripts"))
+LOG_FILE     = Path(os.environ.get("MARK_DAWN_LOG", DATA_DIR.parent / "logs" / "mark-dawn.log"))
+
+INBOX    = DATA_DIR / "Inbox"
+RESEARCH = DATA_DIR / "Research"
+FAILED   = DATA_DIR / "Inbox_Failed"
 CONVERT_SCRIPT = SCRIPTS_DIR / "convert_pdf.py"
-DEBOUNCE     = 3.0
+DEBOUNCE = 3.0
 
 SUPPORTED = {".pdf", ".docx", ".xlsx", ".pptx", ".html", ".csv", ".rtf"}
 
@@ -292,6 +380,7 @@ def log(msg):
     line = f"[{ts}] {msg}"
     print(line, flush=True)
     try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception:
@@ -319,7 +408,7 @@ class InboxHandler(FileSystemEventHandler):
         if not e.is_directory:
             self._touch(e.src_path)
 
-def process_file(file_path):
+def process_file(file_path: Path):
     ext = file_path.suffix.lower()
     out_file = RESEARCH / f"{file_path.stem}.md"
 
@@ -333,7 +422,7 @@ def process_file(file_path):
                 file_path.unlink(missing_ok=True)
                 log(f"OK: {file_path.name} -> {out_file.name}")
                 return True
-        elif ext in {".docx", ".xlsx", ".pptx", ".html", ".csv", ".rtf"}:
+        elif ext in SUPPORTED:
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
             result = subprocess.run(
@@ -362,8 +451,11 @@ def main():
     FAILED.mkdir(parents=True, exist_ok=True)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    pid_file = Path(os.environ.get("MARK_DAWN_PID", SCRIPTS_DIR.parent / "mark-dawn.pid"))
-    pid_file.write_text(str(os.getpid()))
+    pid_file = Path(os.environ.get("MARK_DAWN_PID", DATA_DIR.parent / "mark-dawn.pid"))
+    try:
+        pid_file.write_text(str(os.getpid()))
+    except Exception:
+        pass
 
     handler = InboxHandler()
     observer = Observer()
@@ -399,18 +491,25 @@ if __name__ == "__main__":
     main()
 '@
 
-$watcherPy | Out-File -FilePath (Join-Path $SCRIPTS_DIR "watcher.py") -Encoding utf8
+[System.IO.File]::WriteAllText(
+    (Join-Path $SCRIPTS_DIR "watcher.py"),
+    $watcherPy,
+    [System.Text.UTF8Encoding]::new($false)
+)
 
-# convert_pdf.py content
+# --- convert_pdf.py (native Windows paths) ---
 $convertPdfPy = @'
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+"""
+mark-dawn PDF converter: digital PDFs via pymupdf4llm, scanned via ocrmypdf.
+Native Windows version - uses MARK_DAWN_DATA env var for paths.
+"""
 import os, sys, subprocess, tempfile
 from pathlib import Path
 import fitz
 import pymupdf4llm
 
-DATA_DIR  = Path(os.environ.get("MARK_DAWN_DATA", os.path.expanduser("~/Documents")))
+DATA_DIR  = Path(os.environ.get("MARK_DAWN_DATA", os.path.expanduser("~/mark-dawn/data")))
 RESEARCH  = DATA_DIR / "Research"
 RESEARCH.mkdir(parents=True, exist_ok=True)
 
@@ -449,7 +548,7 @@ try:
             result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
             if result.returncode != 0:
                 print(f"ocrmypdf failed (exit {result.returncode}):", file=sys.stderr)
-                print(result.stderr[-1500:], file=sys.stderr)
+                print(result.stderr[-1500:] if len(result.stderr) > 1500 else result.stderr, file=sys.stderr)
                 sys.exit(1)
             if not ocr_output.exists():
                 print("ocrmypdf did not produce output file", file=sys.stderr)
@@ -468,22 +567,28 @@ except Exception as e:
     sys.exit(1)
 '@
 
-$convertPdfPy | Out-File -FilePath (Join-Path $SCRIPTS_DIR "convert_pdf.py") -Encoding utf8
+[System.IO.File]::WriteAllText(
+    (Join-Path $SCRIPTS_DIR "convert_pdf.py"),
+    $convertPdfPy,
+    [System.Text.UTF8Encoding]::new($false)
+)
 
-Write-OK "Python scripts generated"
-
-# ============================================================================
-# [9/9] Generate launcher (mark-dawn.bat)
-# ============================================================================
-Write-Step "9/9" "Generating mark-dawn.bat launcher..."
-
+# --- launcher.bat (commands match Linux version) ---
 $launcher = @"
 @echo off
 setlocal enabledelayedexpansion
 
+REM ============================================================================
+REM mark-dawn launcher for Windows
+REM Commands match Linux version: start, stop, restart, convert, logs, status,
+REM                                update, install-task, uninstall-task, help
+REM ============================================================================
+
+REM Resolve install directory from script location
 set "INSTALL_DIR=%~dp0"
 set "INSTALL_DIR=%INSTALL_DIR:~0,-1%"
 
+REM Generic paths (relative to install dir)
 set "MSYS2_DIR=%INSTALL_DIR%\msys64"
 set "DATA_DIR=%INSTALL_DIR%\data"
 set "SCRIPTS_DIR=%INSTALL_DIR%\scripts"
@@ -492,6 +597,7 @@ set "PID_FILE=%INSTALL_DIR%\mark-dawn.pid"
 set "LOG_FILE=%LOGS_DIR%\mark-dawn.log"
 set "PYTHON=%MSYS2_DIR%\mingw64\bin\python.exe"
 
+REM Set environment variables consumed by Python scripts
 set "MARK_DAWN_DATA=%DATA_DIR%"
 set "MARK_DAWN_SCRIPTS=%SCRIPTS_DIR%"
 set "MARK_DAWN_LOG=%LOG_FILE%"
@@ -500,6 +606,7 @@ set "TESSDATA_PREFIX=%MSYS2_DIR%\mingw64\share\tessdata"
 set "PATH=%MSYS2_DIR%\mingw64\bin;%MSYS2_DIR%\usr\bin;%PATH%"
 set "PYTHONIOENCODING=utf-8"
 
+REM Ensure directories exist
 if not exist "%DATA_DIR%\Inbox" mkdir "%DATA_DIR%\Inbox"
 if not exist "%DATA_DIR%\Research" mkdir "%DATA_DIR%\Research"
 if not exist "%DATA_DIR%\Inbox_Failed" mkdir "%DATA_DIR%\Inbox_Failed"
@@ -593,9 +700,8 @@ goto help
     goto end
 
 :update
-    echo Updating MSYS2 packages and Python dependencies...
-    "%MSYS2_DIR%\usr\bin\bash.exe" -lc "pacman -Syu --noconfirm"
-    "%MSYS2_DIR%\mingw64\bin\python.exe" -m pip install --upgrade pymupdf4llm "markitdown[all]" watchdog
+    echo Updating Python packages...
+    "%PYTHON%" -m pip install --upgrade --break-system-packages pymupdf4llm "markitdown[all]" watchdog ocrmypdf pikepdf img2pdf
     echo OK: Update complete. Restart the watcher with: mark-dawn.bat restart
     goto end
 
@@ -635,7 +741,7 @@ goto help
     echo   convert FILE       Convert single file
     echo   logs               Follow logs (last 50 lines + live tail)
     echo   status             Show watcher status and PID
-    echo   update             Update MSYS2 packages and Python dependencies
+    echo   update             Update Python dependencies
     echo   install-task       Install auto-start on login (requires Admin)
     echo   uninstall-task     Remove auto-start entry (requires Admin)
     echo   help               Show this help message
@@ -655,9 +761,13 @@ endlocal
 exit /b 0
 "@
 
-$launcher | Out-File -FilePath $LAUNCHER_PATH -Encoding ascii
+[System.IO.File]::WriteAllText(
+    $LAUNCHER_PATH,
+    $launcher,
+    [System.Text.UTF8Encoding]::new($false)
+)
 
-Write-OK "Launcher generated: $LAUNCHER_PATH"
+Write-OK "Python scripts and launcher generated"
 
 # ============================================================================
 # Final summary
@@ -682,5 +792,5 @@ Write-Host "  & `"$LAUNCHER_PATH`" logs"
 Write-Host "  & `"$LAUNCHER_PATH`" stop"
 Write-Host "  & `"$LAUNCHER_PATH`" update"
 Write-Host ""
-Write-Host "Auto-start on login (requires Admin):" -ForegroundColor Yellow
+Write-Host "Auto-start on login (requires Admin PowerShell):" -ForegroundColor Yellow
 Write-Host "  & `"$LAUNCHER_PATH`" install-task"
