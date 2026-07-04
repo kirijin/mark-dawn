@@ -67,42 +67,37 @@ mark-dawn -h
 ```
 ### Windows (PowerShell)
 ```
-# Запустить
-.\mark-dawn.ps1 -Command start
+# Start watcher
+& "$env:USERPROFILE\mark-dawn\mark-dawn.bat" start
 
-# Остановить
-.\mark-dawn.ps1 -Command stop
+# Check status
+& "$env:USERPROFILE\mark-dawn\mark-dawn.bat" status
 
-# Статус
-.\mark-dawn.ps1 -Command status
+# Follow logs
+& "$env:USERPROFILE\mark-dawn\mark-dawn.bat" logs
 
-# Логи
-.\mark-dawn.ps1 -Command logs
+# Convert single file
+& "$env:USERPROFILE\mark-dawn\mark-dawn.bat" convert "C:\path\to\file.pdf"
 
-# Обновить
-.\mark-dawn.ps1 -Command update
+# Stop
+& "$env:USERPROFILE\mark-dawn\mark-dawn.bat" stop
 
-# Автозапуск при входе в систему (Task Scheduler)
-.\mark-dawn.ps1 -Command install-task
+# Update dependencies
+& "$env:USERPROFILE\mark-dawn\mark-dawn.bat" update
 
-# После install-task управление через Task Scheduler:
-Get-ScheduledTask -TaskName "mark-dawn" | Select-Object State
-Stop-ScheduledTask -TaskName "mark-dawn"
-Start-ScheduledTask -TaskName "mark-dawn"
-
-# Удалить автозапуск
-.\mark-dawn.ps1 -Command uninstall-task
+# Auto-start on login (requires Admin PowerShell)
+& "$env:USERPROFILE\mark-dawn\mark-dawn.bat" install-task
 ```
 
 ## How It Works
 ```
-    You drop a file into ~/Documents/Inbox/
-    Watcher detects it (3s debounce)
-    For digital PDFs (avg >100 chars/page) → pymupdf4llm → Markdown (fast)
-    For scanned PDFs → ocrmypdf + Tesseract → pymupdf4llm → Markdown (slower)
-    For Office files → markitdown → Markdown
-    Result appears in ~/Documents/Research/<filename>.md
-    Failed files moved to ~/Documents/Inbox_Failed/
+You drop a file into ~/Documents/Inbox/
+Watcher detects it (3s debounce)
+For digital PDFs (avg >100 chars/page) → pymupdf4llm → Markdown (fast)
+For scanned PDFs → ocrmypdf + Tesseract → pymupdf4llm → Markdown (slower)
+For Office files → markitdown → Markdown
+Result appears in ~/Documents/Research/<filename>.md
+Failed files moved to ~/Documents/Inbox_Failed/
 ```
 ### Directory Layout
 ```
