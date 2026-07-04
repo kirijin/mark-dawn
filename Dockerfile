@@ -34,5 +34,7 @@ LABEL org.opencontainers.image.title="mark-dawn" \
       org.opencontainers.image.source="https://github.com/kirijin/mark-dawn" \
       org.opencontainers.image.licenses="MIT"
 
+USER root
+RUN mkdir -p /workspace/tmp && chmod -R 777 /workspace/tmp
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["watcher"]
