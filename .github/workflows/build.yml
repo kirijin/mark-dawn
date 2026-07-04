@@ -1,12 +1,14 @@
 name: Build and Publish mark-dawn
 
 on:
-  # Automatically on push to main or version tags
   push:
     branches: [ main ]
+    paths:
+      - 'Dockerfile'
+      - '*.py'
+      - '*.sh'
+      - '.github/workflows/build.yml'
     tags: [ 'v*' ]
-
-  # Manual trigger from browser
   workflow_dispatch:
     inputs:
       force_rebuild:
@@ -26,13 +28,12 @@ jobs:
     permissions:
       contents: read
       packages: write
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          
+
       - name: Verify files exist
         run: ls -la Dockerfile convert_pdf.py watcher.py entrypoint.sh
 
@@ -62,6 +63,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -83,4 +85,4 @@ jobs:
           readme-filepath: ./README.md
 
       - name: Image digest
-        run: echo "Image pushed successfully"
+        run: echo "Image pushed with digest ${{ steps.build.outputs.digest }}"
