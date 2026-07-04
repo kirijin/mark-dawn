@@ -2,10 +2,8 @@
   <img src="https://raw.githubusercontent.com/kirijin/mark-dawn/main/logo.png" width="200">
 </p>
 
-# BEWARE
-# !!! VIBE_SLOP_HAZARD !!!
-
-## mark-dawn
+# mark-dawn
+## a vibe-slopped portable ocr solutions for *nix & win
 
 **Universal Document to Markdown Pipeline** with auto-OCR for scanned PDFs.
 
