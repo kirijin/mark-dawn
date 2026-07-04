@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IMAGE="${MARK_DAWN_IMAGE:-docker.io/kirijin/mark-dawn:latest}"
+DATA_DIR="${HOME}/Documents"
+
+# Detect runtime
+if command -v podman >/dev/null 2>&1; then
+    RUNTIME=podman
+elif command -v docker >/dev/null 2>&1; then
+    RUNTIME=docker
+else
+    echo "Error: podman or docker required" >&2
+    exit 1
+fi
+
+$RUNTIME pull "$IMAGE" 2>/dev/null || echo "Using cached image"
+
+case "${1:-}" in
+    start)
+        mkdir -p "$DATA_DIR/Inbox" "$DATA_DIR/Research" "$DATA_DIR/Inbox_Failed"
+        echo "Starting mark-dawn watcher..."
+        $RUNTIME run -d \
+            --name mark-dawn \
+            --restart unless-stopped \
+            -v "$DATA_DIR/Inbox:/data/Inbox:Z" \
+            -v "$DATA_DIR/Research:/data/Research:Z" \
+            -v "$DATA_DIR/Inbox_Failed:/data/Inbox_Failed:Z" \
+            "$IMAGE" watcher
+        echo "OK: Watcher started"
+        echo "   Inbox:    $DATA_DIR/Inbox"
+        echo "   Research: $DATA_DIR/Research"
+        echo "   Logs:     $RUNTIME logs -f mark-dawn"
+        ;;
+    stop)
+        echo "Stopping mark-dawn..."
+        $RUNTIME stop mark-dawn 2>/dev/null || true
+        $RUNTIME rm mark-dawn 2>/dev/null || true
+        echo "OK: Stopped"
+        ;;
+    restart)
+        "$0" stop
+        sleep 2
+        "$0" start
+        ;;
+    convert)
+        shift
+        [ $# -eq 0 ] && { echo "Usage: mark-dawn convert FILE"; exit 1; }
+        FILE_PATH="$(realpath "$1")"
+        [ ! -f "$FILE_PATH" ] && { echo "Error: File not found: $1"; exit 1; }
+        mkdir -p "$DATA_DIR/Inbox" "$DATA_DIR/Research" "$DATA_DIR/Inbox_Failed"
+        $RUNTIME run --rm \
+            -v "$DATA_DIR/Inbox:/data/Inbox:Z" \
+            -v "$DATA_DIR/Research:/data/Research:Z" \
+            -v "$DATA_DIR/Inbox_Failed:/data/Inbox_Failed:Z" \
+            -v "$(dirname "$FILE_PATH"):/input:Z" \
+            "$IMAGE" convert "/input/$(basename "$FILE_PATH")"
+        ;;
+    logs)    $RUNTIME logs -f mark-dawn ;;
+    status)  $RUNTIME ps --filter name=mark-dawn --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" ;;
+    update)
+        echo "Updating mark-dawn image..."
+        $RUNTIME pull "$IMAGE"
+        "$0" restart
+        ;;
+    install-systemd)
+        mkdir -p "$HOME/.config/systemd/user"
+        cat > "$HOME/.config/systemd/user/mark-dawn.service" <<EOF
+[Unit]
+Description=mark-dawn Document Converter
+After=local-fs.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+ExecStart=/bin/bash -c '$(which $RUNTIME) run --rm --name mark-dawn-systemd -v $DATA_DIR/Inbox:/data/Inbox:Z -v $DATA_DIR/Research:/data/Research:Z -v $DATA_DIR/Inbox_Failed:/data/Inbox_Failed:Z $IMAGE watcher'
+ExecStop=/bin/bash -c '$(which $RUNTIME) stop mark-dawn-systemd'
+
+[Install]
+WantedBy=default.target
+EOF
+        systemctl --user daemon-reload
+        systemctl --user enable --now mark-dawn.service
+        echo "OK: Service installed and started"
+        echo "   Status: systemctl --user status mark-dawn"
+        ;;
+    uninstall)
+        "$0" stop
+        systemctl --user disable --now mark-dawn.service 2>/dev/null || true
+        rm -f "$HOME/.config/systemd/user/mark-dawn.service"
+        systemctl --user daemon-reload
+        echo "OK: Uninstalled"
+        ;;
+    help|--help|-h|"")
+        cat <<EOF
+mark-dawn - Universal Document to Markdown Pipeline
+
+Usage: mark-dawn <command>
+
+Commands:
+  start              Start background watcher (watches ~/Documents/Inbox)
+  stop               Stop background watcher
+  restart            Restart watcher
+  convert FILE       Convert single file
+  logs               Follow container logs
+  status             Show container status
+  update             Pull latest image and restart
+  install-systemd    Install as systemd user service (Linux only)
+  uninstall          Remove container and systemd service
+
+Supported formats: PDF, DOCX, XLSX, PPTX, HTML, CSV, RTF
+Supported languages: English, Russian, French, German, Chinese, Japanese
+
+Directories:
+  ~/Documents/Inbox        - Drop files here for auto-conversion
+  ~/Documents/Research     - Converted markdown files appear here
+  ~/Documents/Inbox_Failed - Failed conversions moved here
+
+Environment:
+  MARK_DAWN_IMAGE - Docker image to use (default: $IMAGE)
+EOF
+        ;;
+    *)
+        echo "Unknown command: $1" >&2
+        echo "Run 'mark-dawn help' for usage." >&2
+        exit 1
+        ;;
+esac
