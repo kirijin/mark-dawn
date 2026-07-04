@@ -14,7 +14,7 @@ Converts PDF, DOCX, XLSX, PPTX, HTML, CSV, RTF to clean Markdown with:
 - 👁️ Folder watcher mode: drop files into Inbox, get Markdown in Research
 
 
-### Installation
+### Install it
 
 **Linux / macOS (Podman/Docker)**
 ```bash
@@ -26,7 +26,7 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main
 ```
 
 
-### Usage
+### Use it
 
 **Linux / macOS**
 ```
