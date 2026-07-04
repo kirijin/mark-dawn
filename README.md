@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.sh |
 ```
 **Windows (PowerShell) *(BROKEN. SLOP in PROGRESS)* (MSYS2 Portable)**
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.ps1" -OutFile "$env:TEMP\install.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"
+iwr -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.ps1" -OutFile "$env:TEMP\install.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"
 ```
 
 
