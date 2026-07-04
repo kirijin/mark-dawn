@@ -21,9 +21,11 @@ case "${1:-}" in
         mkdir -p "$DATA_DIR/Inbox" "$DATA_DIR/Research" "$DATA_DIR/Inbox_Failed"
         echo "Starting mark-dawn watcher..."
         $RUNTIME run -d \
-            --user $(id -u):$(id -g) \
             --name mark-dawn \
             --restart unless-stopped \
+            --security-opt seccomp=unconfined \
+            --security-opt apparmor=unconfined \
+            --userns=keep-id \
             -v "$DATA_DIR/Inbox:/data/Inbox:Z" \
             -v "$DATA_DIR/Research:/data/Research:Z" \
             -v "$DATA_DIR/Inbox_Failed:/data/Inbox_Failed:Z" \
@@ -51,6 +53,9 @@ case "${1:-}" in
         [ ! -f "$FILE_PATH" ] && { echo "Error: File not found: $1"; exit 1; }
         mkdir -p "$DATA_DIR/Inbox" "$DATA_DIR/Research" "$DATA_DIR/Inbox_Failed"
         $RUNTIME run --rm \
+            --security-opt seccomp=unconfined \
+            --security-opt apparmor=unconfined \
+            --userns=keep-id \
             -v "$DATA_DIR/Inbox:/data/Inbox:Z" \
             -v "$DATA_DIR/Research:/data/Research:Z" \
             -v "$DATA_DIR/Inbox_Failed:/data/Inbox_Failed:Z" \
