@@ -103,6 +103,8 @@ ok "Launcher installed (${SIZE}B, executable)"
 # --- [4/4] Add to PATH automatically ----------------------------------------
 step "4/4" "Configuring PATH..."
 
+IN_PATH=0
+
 EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
 case ":$PATH:" in
