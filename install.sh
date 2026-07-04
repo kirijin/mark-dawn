@@ -103,8 +103,6 @@ ok "Launcher installed (${SIZE}B, executable)"
 # --- [4/4] Add to PATH automatically ----------------------------------------
 step "4/4" "Configuring PATH..."
 
-#IN_PATH=0
-
 EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
 case ":$PATH:" in
@@ -138,33 +136,8 @@ esac
 # --- Done --------------------------------------------------------------------
 printf "\n${C_GREEN}=== mark-dawn installed ===${C_RESET}\n\n"
 
-#if [ "$IN_PATH" -eq 0 ]; then
-#    printf "Add ~/.local/bin to your PATH first:\n\n"
-#    case "${SHELL:-/bin/sh}" in
-#        */zsh)
-#            printf "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc\n"
-#            printf "  source ~/.zshrc\n\n"
-#            ;;
-#        */fish)
-#            printf "  fish_add_path -U \$HOME/.local/bin\n\n"
-#            ;;
-#        */bash)
-#            printf "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc\n"
-#            printf "  source ~/.bashrc\n\n"
-#            ;;
-#        *)
-#            printf "  export PATH=\"\$HOME/.local/bin:\$PATH\"\n"
-#            printf "  # (add the line above to your shell profile)\n\n"
-#            ;;
-#    esac
-#    printf "Then run:\n\n"
-#    printf "  ${C_CYAN}mark-dawn start${C_RESET}\n\n"
-#    printf "Or invoke directly (no PATH needed):\n\n"
-#    printf "  ${C_CYAN}$INSTALL_PATH start${C_RESET}\n\n"
-#else
-    printf "Run:\n\n"
-    printf "  ${C_CYAN}mark-dawn start${C_RESET}\n\n"
-#fi
+printf "Run:\n\n"
+printf "  ${C_CYAN}mark-dawn start${C_RESET}\n\n"
 
 printf "Other commands:\n"
 printf "  mark-dawn stop          # stop the watcher\n"
