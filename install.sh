@@ -100,17 +100,36 @@ if [ "$SIZE" -lt 500 ]; then
 fi
 ok "Launcher installed (${SIZE}B, executable)"
 
-# --- [4/4] PATH check ---------------------------------------------------------
-step "4/4" "Verifying PATH..."
+# --- [4/4] Add to PATH automatically ----------------------------------------
+step "4/4" "Configuring PATH..."
+
+EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
 case ":$PATH:" in
     *":$INSTALL_DIR:"*)
-        ok "$INSTALL_DIR is already in PATH"
-        IN_PATH=1
+        ok "$INSTALL_DIR is already in active PATH"
         ;;
     *)
-        IN_PATH=0
-        info "$INSTALL_DIR is NOT in your PATH"
+        # Detect shell and pick the right config file
+        CURRENT_SHELL="$(basename "$SHELL")"
+        case "$CURRENT_SHELL" in
+            zsh)  RC_FILE="$HOME/.zshrc" ;;
+            bash) RC_FILE="$HOME/.bashrc" ;;
+            *)    RC_FILE="$HOME/.profile" ;; # Fallback for sh/fish/others
+        esac
+
+        # Add to file only if it's not already there (prevents duplicates)
+        if ! grep -qxF "$EXPORT_LINE" "$RC_FILE" 2>/dev/null; then
+            echo "" >> "$RC_FILE"
+            echo "# Added by mark-dawn installer" >> "$RC_FILE"
+            echo "$EXPORT_LINE" >> "$RC_FILE"
+            ok "Added $INSTALL_DIR to $RC_FILE"
+        else
+            ok "$INSTALL_DIR was already in $RC_FILE"
+        fi
+        
+        # Subshell trap: we still must tell them to reload
+        info "Run 'source $RC_FILE' or restart your terminal, then run: mark-dawn start"
         ;;
 esac
 
