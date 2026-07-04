@@ -2,8 +2,8 @@
   <img src="https://raw.githubusercontent.com/kirijin/mark-dawn/main/logo.png" width="200">
 </p>
 
-# mark-dawn
-## a vibe-slopped portable ocr solution for *nix & win
+## **mark-dawn**
+***a vibe-slopped portable ocr solution for nix & win***
 
 **Universal Document to Markdown Pipeline** with auto-OCR for scanned PDFs.
 
@@ -13,21 +13,22 @@ Converts PDF, DOCX, XLSX, PPTX, HTML, CSV, RTF to clean Markdown with:
 - 📦 Fully containerized (Podman/Docker) — works on any system
 - 👁️ Folder watcher mode: drop files into Inbox, get Markdown in Research
 
-## Quick Start (one command)
 
+### Quick Start (one command)
 
-### Linux / macOS (Podman/Docker)
+**Linux / macOS (Podman/Docker)**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.sh | bash
 ```
-### Windows (PowerShell) (BROKEN. SLOP in PROGRESS) (MSYS2 Portable)
+**Windows (PowerShell) *(BROKEN. SLOP in PROGRESS)* (MSYS2 Portable)**
 ```powershell
 Invoke-WebRequest -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.ps1" -OutFile "$env:TEMP\install.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"
 ```
 
-## Usage
 
-### Linux / macOS
+### Usage
+
+**Linux / macOS**
 ```
 # Start the background watcher (auto-converts files in ~/Documents/Inbox)
 mark-dawn start
@@ -61,7 +62,8 @@ mark-dawn help
 mark-dawn --help
 mark-dawn -h
 ```
-### Windows (PowerShell)
+
+**Windows (PowerShell)**
 ```
 # Start watcher
 & "$env:USERPROFILE\mark-dawn\mark-dawn.bat" start
@@ -85,24 +87,26 @@ mark-dawn -h
 & "$env:USERPROFILE\mark-dawn\mark-dawn.bat" install-task
 ```
 
-## How It Works
-```
-You drop a file into ~/Documents/Inbox/
-Watcher detects it (3s debounce)
-For digital PDFs (avg >100 chars/page) → pymupdf4llm → Markdown (fast)
-For scanned PDFs → ocrmypdf + Tesseract → pymupdf4llm → Markdown (slower)
-For Office files → markitdown → Markdown
-Result appears in ~/Documents/Research/<filename>.md
-Failed files moved to ~/Documents/Inbox_Failed/
-```
-### Directory Layout
+
+**How It Works**
+
+- You drop a file into ~/Documents/Inbox/
+- Watcher detects it (3s debounce)
+- For digital PDFs (avg >100 chars/page) → pymupdf4llm → Markdown (fast)
+- For scanned PDFs → ocrmypdf + Tesseract → pymupdf4llm → Markdown (slower)
+- For Office files → markitdown → Markdown
+- Result appears in ~/Documents/Research/<filename>.md
+- Failed files moved to ~/Documents/Inbox_Failed/
+
+
+**Directory Layout**
 ```
 ~/Documents/
 ├── Inbox/         ← Drop files here
 ├── Research/      ← Converted Markdown appears here
 └── Inbox_Failed/  ← Files that couldn't be converted
 ```
-### Building Locally
+**Building Locally**
 ```
 git clone https://github.com/kirijin/mark-dawn.git
 cd mark-dawn
