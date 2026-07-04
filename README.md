@@ -18,48 +18,52 @@ Converts PDF, DOCX, XLSX, PPTX, HTML, CSV, RTF to clean Markdown with:
 ## Quick Start (one command)
 
 
-### Linux / macOS
+### Linux / macOS (Podman/Docker)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.sh -o ~/.local/bin/mark-dawn
-chmod +x ~/.local/bin/mark-dawn
+curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.sh | bash
 mark-dawn start
 ```
-### Windows (PowerShell) (BROKEN. SLOP in PROGRESS)
+### Windows (PowerShell) (BROKEN. SLOP in PROGRESS) (MSYS2 Portable)
 ```powershell
 iwr -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.ps1" -OutFile mark-dawn.ps1
 .\mark-dawn.ps1 -Command start
 ```
 
-
-## Requirements: Podman or Docker installed.
-
 ## Usage
 
 ### Linux / macOS
 ```
-# Проверить, запущен ли
-./mark-dawn status
+# Start the background watcher (auto-converts files in ~/Documents/Inbox)
+mark-dawn start
 
-# Остановить
-./mark-dawn stop
+# Stop the watcher
+mark-dawn stop
 
-# Запустить заново
-./mark-dawn start
+# Restart the watcher
+mark-dawn restart
 
-# Смотреть логи в реальном времени
-./mark-dawn logs
+# Convert a single file manually
+mark-dawn convert /path/to/file.pdf
 
-# Обновить до последней версии
-./mark-dawn update
+# Follow container logs in real-time (Ctrl+C to exit)
+mark-dawn logs
 
-# Сделать автозапуск при входе в систему
-./mark-dawn install-systemd
+# Show container status and PID
+mark-dawn status
 
-# После install-systemd управление через systemctl:
-systemctl --user status mark-dawn
-systemctl --user stop mark-dawn
-systemctl --user restart mark-dawn
-journalctl --user -u mark-dawn -f    # логи через journalctl
+# Pull latest image from Docker Hub and restart
+mark-dawn update
+
+# Install as systemd user service (auto-start on login)
+mark-dawn install-systemd
+
+# Remove systemd service and stop container
+mark-dawn uninstall
+
+# Show help / usage information
+mark-dawn help
+mark-dawn --help
+mark-dawn -h
 ```
 ### Windows (PowerShell)
 ```
