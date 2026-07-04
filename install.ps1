@@ -188,13 +188,22 @@ try {
 }
 
 # ============================================================================
-# [6/9] Install Python packages via pip
+# [6/9] Install Python packages via python -m pip (universal method)
 # ============================================================================
 Write-Step "6/9" "Installing Python packages (pymupdf4llm, markitdown, watchdog)..."
 
 try {
-    $pip = Join-Path $MSYS2_DIR "mingw64\bin\pip.exe"
-    & $pip install --quiet pymupdf4llm "markitdown[all]" watchdog | Out-Null
+    $python = Join-Path $MSYS2_DIR "mingw64\bin\python.exe"
+    
+    # Verify python exists
+    if (-not (Test-Path $python)) {
+        Write-Fail "python.exe not found at $python. Step [5/9] may have failed."
+    }
+    
+    # Use 'python -m pip' instead of pip.exe directly (more reliable in MSYS2 MINGW64)
+    & $python -m pip install --quiet pymupdf4llm "markitdown[all]" watchdog
+    if ($LASTEXITCODE -ne 0) { throw "pip install exited with code $LASTEXITCODE" }
+    
     Write-OK "Python packages installed"
 } catch {
     Write-Fail "Failed to install Python packages: $_"
@@ -565,7 +574,7 @@ goto help
 :update
     echo Updating MSYS2 packages and Python dependencies...
     "%MSYS2_DIR%\usr\bin\bash.exe" -lc "pacman -Syu --noconfirm"
-    "%MSYS2_DIR%\mingw64\bin\pip.exe" install --upgrade pymupdf4llm "markitdown[all]" watchdog
+    "%MSYS2_DIR%\mingw64\bin\python.exe" -m pip install --upgrade pymupdf4llm "markitdown[all]" watchdog
     echo OK: Update complete. Restart the watcher with: mark-dawn.bat restart
     goto end
 
