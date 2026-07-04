@@ -3,7 +3,7 @@
 </p>
 
 # BEWARE
-# !!!VIBE_SLOP_HAZARD!!!
+# !!! VIBE_SLOP_HAZARD !!!
 
 ## mark-dawn
 
