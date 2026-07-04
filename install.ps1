@@ -142,81 +142,75 @@ if (-not (Test-Path $bashExe)) {
 }
 
 # ============================================================================
-# [4/9] Initialize MSYS2 (disable ARM64 repos + fix mirrorlist)
+# [4/9] Initialize MSYS2 (create clean pacman.conf + mirrorlists)
 # ============================================================================
-Write-Step "4/9" "Initializing MSYS2 (disabling ARM64 repos + fixing mirrorlist)..."
+Write-Step "4/9" "Initializing MSYS2 (creating clean config)..."
 
 $bash = Join-Path $MSYS2_DIR "usr\bin\bash.exe"
 
 if (-not $SkipInit) {
     try {
-        # First run: initialize
+        # First run: initialize pacman keyring
         Write-Info "First run: initializing MSYS2 environment..."
         & $bash -lc "exit" | Out-Null
         Start-Sleep -Seconds 5
 
-# Ensure correct Include lines are uncommented for needed repos
-Write-Info "Configuring pacman.conf..."
-& $bash -lc "
-# Fix mingw64 section - uncomment Include and set correct mirrorlist path
-awk '
-  BEGIN { in_mingw64=0; in_ucrt64=0; in_clang64=0; in_msys=0 }
-  /^\[mingw64\]$/ { in_mingw64=1; print; next }
-  /^\[ucrt64\]$/  { in_ucrt64=1; print; next }
-  /^\[clang64\]$/ { in_clang64=1; print; next }
-  /^\[msys\]$/    { in_msys=1; print; next }
-  /^\[/           { in_mingw64=0; in_ucrt64=0; in_clang64=0; in_msys=0; print; next }
-  in_mingw64 && /^#?Include = .*mirrorlist/ { print \"Include = /etc/pacman.d/mirrorlist.mingw64\"; next }
-  in_ucrt64  && /^#?Include = .*mirrorlist/ { print \"Include = /etc/pacman.d/mirrorlist.ucrt64\"; next }
-  in_clang64 && /^#?Include = .*mirrorlist/ { print \"Include = /etc/pacman.d/mirrorlist.clang64\"; next }
-  { print }
-' /etc/pacman.conf > /tmp/pacman.conf && mv /tmp/pacman.conf /etc/pacman.conf
-" | Out-Null
+        # Overwrite pacman.conf with minimal clean config (no awk, no complex quoting)
+        Write-Info "Creating clean pacman.conf (msys + mingw64 only)..."
+        $pacmanConf = @"
+[options]
+HoldPkg     = pacman
+Architecture = auto
+Color
+CheckSpace
+ParallelDownloads = 5
+SigLevel    = Required
+LocalFileSigLevel = Optional
 
-        # Restore correct mirrorlist files
-        Write-Info "Restoring correct mirrorlist files..."
-        & $bash -lc "
-cat > /etc/pacman.d/mirrorlist.mingw64 << 'EOF'
-Server = https://repo.msys2.org/mingw/mingw64/
-Server = https://mirror.msys2.org/mingw/mingw64/
-Server = https://mirror.yandex.ru/mirrors/msys2/mingw/mingw64/
-EOF
+[msys]
+Include = /etc/pacman.d/mirrorlist.msys
 
-cat > /etc/pacman.d/mirrorlist.ucrt64 << 'EOF'
-Server = https://repo.msys2.org/mingw/ucrt64/
-Server = https://mirror.msys2.org/mingw/ucrt64/
-Server = https://mirror.yandex.ru/mirrors/msys2/mingw/ucrt64/
-EOF
+[mingw64]
+Include = /etc/pacman.d/mirrorlist.mingw64
+"@
+        # Write via PowerShell file API (avoids bash quoting hell)
+        $pacmanConfPath = Join-Path $MSYS2_DIR "etc\pacman.conf"
+        [System.IO.File]::WriteAllText($pacmanConfPath, $pacmanConf, [System.Text.UTF8Encoding]::new($false))
+        Write-OK "pacman.conf created"
 
-cat > /etc/pacman.d/mirrorlist.clang64 << 'EOF'
-Server = https://repo.msys2.org/mingw/clang64/
-Server = https://mirror.msys2.org/mingw/clang64/
-Server = https://mirror.yandex.ru/mirrors/msys2/mingw/clang64/
-EOF
-
-cat > /etc/pacman.d/mirrorlist.msys << 'EOF'
+        # Create mirrorlist.msys
+        Write-Info "Creating mirrorlist files..."
+        $msysMirror = @"
 Server = https://repo.msys2.org/msys/x86_64/
 Server = https://mirror.msys2.org/msys/x86_64/
 Server = https://mirror.yandex.ru/mirrors/msys2/msys/x86_64/
-EOF
-" | Out-Null
+"@
+        [System.IO.File]::WriteAllText((Join-Path $MSYS2_DIR "etc\pacman.d\mirrorlist.msys"), $msysMirror, [System.Text.UTF8Encoding]::new($false))
 
-        # Refresh keys
+        # Create mirrorlist.mingw64
+        $mingw64Mirror = @"
+Server = https://repo.msys2.org/mingw/mingw64/
+Server = https://mirror.msys2.org/mingw/mingw64/
+Server = https://mirror.yandex.ru/mirrors/msys2/mingw/mingw64/
+"@
+        [System.IO.File]::WriteAllText((Join-Path $MSYS2_DIR "etc\pacman.d\mirrorlist.mingw64"), $mingw64Mirror, [System.Text.UTF8Encoding]::new($false))
+        Write-OK "Mirrorlist files created"
+
+        # Refresh keyring
         Write-Info "Refreshing pacman keyring..."
         & $bash -lc "pacman-key --init" 2>&1 | Out-Null
         & $bash -lc "pacman-key --populate msys2" 2>&1 | Out-Null
 
-        # Pass 1: core system update
+        # Pass 1: core update
         Write-Info "Pass 1: core system update..."
         $output = & $bash -lc "pacman -Syu --noconfirm --disable-download-timeout" 2>&1
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "pacman output:" -ForegroundColor Yellow
-            $output | ForEach-Object { Write-Host "  $_" }
+            Write-Host "Pass 1 output: $output" -ForegroundColor Yellow
             throw "Pass 1 failed"
         }
         Write-OK "Pass 1 complete"
 
-        # Pass 2: remaining packages
+        # Pass 2: remaining
         Write-Info "Pass 2: remaining packages..."
         & $bash -lc "pacman -Su --noconfirm --disable-download-timeout" 2>&1 | Out-Null
         Write-OK "MSYS2 initialized"
@@ -226,129 +220,44 @@ EOF
 }
 
 # ============================================================================
-# [5/9] Install Tesseract + Ghostscript + Python via pacman
-#       NOTE: ocrmypdf is NOT in MSYS2 repos - it's installed via pip in step [6/9]
+# [5/9] Install system packages (tesseract, ghostscript, python, pip)
 # ============================================================================
-Write-Step "5/9" "Installing system packages (Tesseract, Ghostscript, Python)..."
-
+Write-Step "5/9" "Installing system packages..."
 try {
-    # Actual available packages in MSYS2 MINGW64 repo (verified 2026)
-    $packages = @(
-        "mingw-w64-x86_64-tesseract-ocr",
-        "mingw-w64-x86_64-ghostscript",
-        "mingw-w64-x86_64-python",
-        "mingw-w64-x86_64-python-pip"
-    )
-    $pkgList = $packages -join " "
-    
-    Write-Info "Installing: $pkgList"
-    
-    # Capture output + exit code properly
-    $output = & $bash -lc "pacman -Sy --noconfirm --needed $pkgList" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "pacman output:" -ForegroundColor Yellow
-        $output | ForEach-Object { Write-Host "  $_" }
-        throw "pacman exited with code $LASTEXITCODE"
-    }
-
-    # Verify critical binaries actually exist
-    $required = @{
-        "tesseract" = (Join-Path $MSYS2_DIR "mingw64\bin\tesseract.exe")
-        "python"    = (Join-Path $MSYS2_DIR "mingw64\bin\python.exe")
-        "gs"        = (Join-Path $MSYS2_DIR "mingw64\bin\gswin64c.exe")
-    }
-    $missing = @()
-    foreach ($kv in $required.GetEnumerator()) {
-        if (-not (Test-Path $kv.Value)) {
-            $missing += "$($kv.Key) (expected: $($kv.Value))"
-        }
-    }
-    if ($missing.Count -gt 0) {
-        throw "Missing binaries after install: $($missing -join ', ')"
-    }
-
-    Write-OK "System packages installed (tesseract, python, ghostscript verified)"
+    & $bash -lc "pacman -S --noconfirm --needed mingw-w64-x86_64-tesseract-ocr mingw-w64-x86_64-ghostscript mingw-w64-x86_64-python mingw-w64-x86_64-python-pip"
+    if ($LASTEXITCODE -ne 0) { throw "pacman install failed" }
+    Write-OK "System packages installed"
 } catch {
     Write-Fail "Failed to install system packages: $_"
 }
 
 # ============================================================================
-# [6/9] Install Python packages via python -m pip
-#       Includes ocrmypdf (not available via pacman)
+# [6/9] Install Python packages via pip (pymupdf, ocrmypdf, etc.)
 # ============================================================================
 Write-Step "6/9" "Installing Python packages via pip..."
-
 try {
-    $python = Join-Path $MSYS2_DIR "mingw64\bin\python.exe"
-
-    if (-not (Test-Path $python)) {
-        Write-Fail "python.exe not found at $python. Step [5/9] must have failed."
-    }
-
-    # Bootstrap pip (in case ensurepip wasn't triggered)
-    Write-Info "Ensuring pip is available..."
-    & $python -m ensurepip --upgrade 2>$null | Out-Null
-    & $python -m pip install --quiet --upgrade pip
-    if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
-
-    # Install main stack (ocrmypdf is HERE, not in pacman!)
-    $pyPackages = @(
-        "pymupdf4llm",
-        "markitdown[all]",
-        "watchdog",
-        "ocrmypdf",
-        "pikepdf",       # dependency for ocrmypdf (sometimes optional but safer to install)
-        "img2pdf"        # used by ocrmypdf for some output modes
-    )
-    Write-Info "Installing: $($pyPackages -join ', ')"
-    
-    # Run in MINGW64 environment (PATH already contains mingw64\bin via launcher logic;
-    # here we ensure it so 'tesseract', 'gs' binaries are discoverable by ocrmypdf)
-    $env:PATH = "$MSYS2_DIR\mingw64\bin;$MSYS2_DIR\usr\bin;$env:PATH"
-    
-    & $python -m pip install --quiet $pyPackages
-    if ($LASTEXITCODE -ne 0) { throw "pip install failed with code $LASTEXITCODE" }
+    & $bash -lc "/mingw64/bin/python -m pip install --no-cache-dir pymupdf4llm 'markitdown[all]' watchdog ocrmypdf pikepdf img2pdf"
+    if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
     # Verify imports
-    $imports = "import pymupdf4llm, markitdown, watchdog, ocrmypdf, pikepdf; print('all-imports-OK')"
-    $verifyOut = (& $python -c $imports 2>&1)
-    if ($verifyOut -notmatch "all-imports-OK") {
-        throw "Import verification failed: $verifyOut"
-    }
-
-    Write-OK "Python packages installed and verified (incl. ocrmypdf via pip)"
+    $verify = & $bash -lc "/mingw64/bin/python -c 'import pymupdf4llm, markitdown, watchdog, ocrmypdf; print(\"OK\")'" 2>&1
+    if ($verify -notmatch "OK") { throw "Import verification failed: $verify" }
+    Write-OK "Python packages installed and verified"
 } catch {
     Write-Fail "Failed to install Python packages: $_"
 }
 
 # ============================================================================
-# [7/9] Download language models (6 languages)
+# [7/9] Download Tesseract language models (6 languages)
 # ============================================================================
-Write-Step "7/9" "Downloading language models for 6 languages..."
-
-$languages = @("eng", "rus", "fra", "deu", "chi_sim", "jpn")
+Write-Step "7/9" "Downloading language models (eng, rus, fra, deu, chi_sim, jpn)..."
+$tessdata = Join-Path $MSYS2_DIR "mingw64\share\tessdata"
 $baseUrl = "https://github.com/tesseract-ocr/tessdata/raw/main"
-
-foreach ($lang in $languages) {
-    $dest = Join-Path $TESSDATA_DIR "$lang.traineddata"
-    $needsDownload = $false
-    
-    if (-not (Test-Path $dest)) {
-        $needsDownload = $true
-    } else {
-        $fileSize = (Get-Item $dest).Length
-        if ($fileSize -lt 1MB) {
-            $needsDownload = $true
-        }
-    }
-    
-    if ($needsDownload) {
+foreach ($lang in @("eng","rus","fra","deu","chi_sim","jpn")) {
+    $dest = Join-Path $tessdata "$lang.traineddata"
+    if (-not (Test-Path $dest) -or (Get-Item $dest).Length -lt 1MB) {
         Write-Info "Downloading $lang..."
-        try {
-            Invoke-WebRequest -Uri "$baseUrl/$lang.traineddata" -OutFile $dest -UseBasicParsing
-        } catch {
-            Write-Host "WARNING: Failed to download $lang" -ForegroundColor Yellow
-        }
+        Invoke-WebRequest -Uri "$baseUrl/$lang.traineddata" -OutFile $dest -UseBasicParsing
     }
 }
 Write-OK "Language models ready"
