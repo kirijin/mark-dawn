@@ -157,11 +157,11 @@ printf "\n${C_GREEN}=== mark-dawn installed ===${C_RESET}\n\n"
 #            printf "  # (add the line above to your shell profile)\n\n"
 #            ;;
 #    esac
-    printf "Then run:\n\n"
-    printf "  ${C_CYAN}mark-dawn start${C_RESET}\n\n"
-    printf "Or invoke directly (no PATH needed):\n\n"
-    printf "  ${C_CYAN}$INSTALL_PATH start${C_RESET}\n\n"
-else
+#    printf "Then run:\n\n"
+#    printf "  ${C_CYAN}mark-dawn start${C_RESET}\n\n"
+#    printf "Or invoke directly (no PATH needed):\n\n"
+#    printf "  ${C_CYAN}$INSTALL_PATH start${C_RESET}\n\n"
+#else
     printf "Run:\n\n"
     printf "  ${C_CYAN}mark-dawn start${C_RESET}\n\n"
 fi
