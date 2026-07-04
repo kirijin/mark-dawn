@@ -3,12 +3,9 @@
     mark-dawn portable installer for Windows (MSYS2-based, no WSL required)
 .DESCRIPTION
     Installs mark-dawn as a fully portable application in %USERPROFILE%\mark-dawn.
-    - No administrator rights required for installation
-    - No WSL, no VM, no Docker
-    - Native Windows binaries via MSYS2 (Tesseract, Ghostscript, Python)
-    - Admin rights required ONLY for install-task (Task Scheduler)
+    Compatible with Windows PowerShell 5.1 (default) and PowerShell 7+.
 .NOTES
-    Supports Windows 10/11 x64. All paths are relative to install root.
+    Requires: Windows 10/11 x64. No admin rights required (except for install-task).
 #>
 
 param(
@@ -20,7 +17,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 # ============================================================================
-# Helper functions (English messages for automation compatibility)
+# Helper functions (English messages, PS 5.1 compatible)
 # ============================================================================
 function Write-Step  { param([string]$n,[string]$m) Write-Host "[$n] " -ForegroundColor Cyan -NoNewline; Write-Host $m }
 function Write-OK    { param([string]$m) Write-Host "OK: $m" -ForegroundColor Green }
@@ -36,9 +33,6 @@ function Show-Help {
     Write-Host "  -InstallDir   Custom installation directory (default: %USERPROFILE%\mark-dawn)"
     Write-Host "  -SkipInit     Skip MSYS2 initialization (advanced, for re-runs)"
     Write-Host "  -Help         Show this help message"
-    Write-Host ""
-    Write-Host "After installation, use the launcher:"
-    Write-Host "  %USERPROFILE%\mark-dawn\mark-dawn.bat start|stop|restart|convert|logs|status|update"
     exit 0
 }
 
@@ -52,7 +46,12 @@ Write-Step "1/9" "Resolving installation directory..."
 if (-not $InstallDir) {
     $InstallDir = Join-Path $env:USERPROFILE "mark-dawn"
 }
-$InstallDir = (Resolve-Path $InstallDir -ErrorAction SilentlyContinue) ?? $InstallDir
+
+# PS 5.1 compatible: no ?? operator
+$resolvedPath = Resolve-Path $InstallDir -ErrorAction SilentlyContinue
+if ($resolvedPath) {
+    $InstallDir = $resolvedPath.Path
+}
 
 $MSYS2_DIR     = Join-Path $InstallDir "msys2"
 $DATA_DIR      = Join-Path $InstallDir "data"
@@ -63,7 +62,6 @@ $LAUNCHER_PATH = Join-Path $InstallDir "mark-dawn.bat"
 $PID_FILE      = Join-Path $InstallDir "mark-dawn.pid"
 $LOG_FILE      = Join-Path $LOGS_DIR "mark-dawn.log"
 
-# Verify user has write permissions (no admin required)
 try {
     New-Item -ItemType Directory -Force -Path $InstallDir, $DATA_DIR, $SCRIPTS_DIR, $LOGS_DIR | Out-Null
 } catch {
@@ -94,9 +92,9 @@ Write-OK "MSYS2 installer ready"
 # ============================================================================
 Write-Step "3/9" "Extracting MSYS2 (this takes 2-5 minutes)..."
 
-if (-not (Test-Path (Join-Path $MSYS2_DIR "usr\bin\bash.exe"))) {
+$bashExe = Join-Path $MSYS2_DIR "usr\bin\bash.exe"
+if (-not (Test-Path $bashExe)) {
     try {
-        # Silent extraction to parent directory, then rename
         $parentDir = Split-Path $InstallDir -Parent
         $tempExtract = Join-Path $parentDir "msys2_extract"
         New-Item -ItemType Directory -Force -Path $tempExtract | Out-Null
@@ -104,7 +102,6 @@ if (-not (Test-Path (Join-Path $MSYS2_DIR "usr\bin\bash.exe"))) {
         $proc = Start-Process -FilePath $msys2Installer -ArgumentList "-y", "-o`"$tempExtract`"" -Wait -PassThru -NoNewWindow
         if ($proc.ExitCode -ne 0) { throw "Extraction failed with code $($proc.ExitCode)" }
 
-        # Move extracted content to final location
         $extracted = Join-Path $tempExtract "msys2"
         if (Test-Path $extracted) {
             Move-Item -Path $extracted -Destination $MSYS2_DIR -Force
@@ -127,11 +124,9 @@ $bash = Join-Path $MSYS2_DIR "usr\bin\bash.exe"
 
 if (-not $SkipInit) {
     try {
-        # First run: initialize user profile and keyring
         & $bash -lc "exit" | Out-Null
         Start-Sleep -Seconds 3
 
-        # Update core system (requires double-pass on fresh MSYS2)
         Write-Info "First pass: updating core system..."
         & $bash -lc "pacman -Syu --noconfirm" | Out-Null
 
@@ -150,7 +145,6 @@ if (-not $SkipInit) {
 Write-Step "5/9" "Installing OCR stack via pacman (5-10 minutes)..."
 
 try {
-    # All packages available in MINGW64 repo (native Windows binaries)
     $packages = @(
         "mingw-w64-x86_64-tesseract-ocr",
         "mingw-w64-x86_64-tesseract-ocr-data",
@@ -168,7 +162,7 @@ try {
 }
 
 # ============================================================================
-# [6/9] Install Python packages via pip (inside MSYS2)
+# [6/9] Install Python packages via pip
 # ============================================================================
 Write-Step "6/9" "Installing Python packages (pymupdf4llm, markitdown, watchdog)..."
 
@@ -181,7 +175,7 @@ try {
 }
 
 # ============================================================================
-# [7/9] Download language models (eng, rus, fra, deu, chi_sim, jpn)
+# [7/9] Download language models (6 languages)
 # ============================================================================
 Write-Step "7/9" "Downloading language models for 6 languages..."
 
@@ -190,7 +184,18 @@ $baseUrl = "https://github.com/tesseract-ocr/tessdata/raw/main"
 
 foreach ($lang in $languages) {
     $dest = Join-Path $TESSDATA_DIR "$lang.traineddata"
-    if (-not (Test-Path $dest) -or (Get-Item $dest).Length -lt 1MB) {
+    $needsDownload = $false
+    
+    if (-not (Test-Path $dest)) {
+        $needsDownload = $true
+    } else {
+        $fileSize = (Get-Item $dest).Length
+        if ($fileSize -lt 1MB) {
+            $needsDownload = $true
+        }
+    }
+    
+    if ($needsDownload) {
         Write-Info "Downloading $lang..."
         try {
             Invoke-WebRequest -Uri "$baseUrl/$lang.traineddata" -OutFile $dest -UseBasicParsing
@@ -202,24 +207,19 @@ foreach ($lang in $languages) {
 Write-OK "Language models ready"
 
 # ============================================================================
-# [8/9] Generate Python scripts with generic paths
+# [8/9] Generate Python scripts
 # ============================================================================
 Write-Step "8/9" "Generating watcher.py and convert_pdf.py..."
 
-# --- watcher.py ---
+# watcher.py content
 $watcherPy = @'
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-mark-dawn watcher: monitors Inbox folder and converts new files to Markdown.
-Uses environment variables for paths (portable across Windows/Linux/macOS).
-"""
 import os, sys, time, subprocess
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# Resolve paths from environment (set by launcher)
 DATA_DIR     = Path(os.environ.get("MARK_DAWN_DATA", os.path.expanduser("~/Documents")))
 INBOX        = DATA_DIR / "Inbox"
 RESEARCH     = DATA_DIR / "Research"
@@ -263,8 +263,7 @@ class InboxHandler(FileSystemEventHandler):
         if not e.is_directory:
             self._touch(e.src_path)
 
-def process_file(file_path: Path) -> bool:
-    """Process a single file. Returns True on success."""
+def process_file(file_path):
     ext = file_path.suffix.lower()
     out_file = RESEARCH / f"{file_path.stem}.md"
 
@@ -293,7 +292,6 @@ def process_file(file_path: Path) -> bool:
     except Exception as e:
         log(f"Error processing {file_path.name}: {e}")
 
-    # Move to Failed on any error
     try:
         dest = FAILED / file_path.name
         file_path.rename(dest)
@@ -308,7 +306,6 @@ def main():
     FAILED.mkdir(parents=True, exist_ok=True)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    # Write PID for stop/status commands
     pid_file = Path(os.environ.get("MARK_DAWN_PID", SCRIPTS_DIR.parent / "mark-dawn.pid"))
     pid_file.write_text(str(os.getpid()))
 
@@ -348,14 +345,10 @@ if __name__ == "__main__":
 
 $watcherPy | Out-File -FilePath (Join-Path $SCRIPTS_DIR "watcher.py") -Encoding utf8
 
-# --- convert_pdf.py ---
+# convert_pdf.py content
 $convertPdfPy = @'
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-mark-dawn PDF converter: digital PDFs via pymupdf4llm, scanned via ocrmypdf.
-Uses environment variables for paths (portable across Windows/Linux/macOS).
-"""
 import os, sys, subprocess, tempfile
 from pathlib import Path
 import fitz
@@ -388,7 +381,6 @@ try:
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
 
-            # Direct ocrmypdf call (Tesseract + languages already in MSYS2 env)
             cmd = [
                 "ocrmypdf",
                 "--skip-text",
@@ -425,26 +417,17 @@ $convertPdfPy | Out-File -FilePath (Join-Path $SCRIPTS_DIR "convert_pdf.py") -En
 Write-OK "Python scripts generated"
 
 # ============================================================================
-# [9/9] Generate launcher with Linux-compatible commands
+# [9/9] Generate launcher (mark-dawn.bat)
 # ============================================================================
 Write-Step "9/9" "Generating mark-dawn.bat launcher..."
 
-# Use Windows batch syntax; commands match Linux version (start/stop/restart/convert/logs/status/update)
 $launcher = @"
 @echo off
 setlocal enabledelayedexpansion
 
-REM ============================================================================
-REM mark-dawn launcher for Windows
-REM Commands match Linux version: start, stop, restart, convert, logs, status,
-REM                                update, install-task, uninstall-task, help
-REM ============================================================================
-
-REM Resolve install directory from script location
 set "INSTALL_DIR=%~dp0"
 set "INSTALL_DIR=%INSTALL_DIR:~0,-1%"
 
-REM Generic paths (relative to install dir)
 set "MSYS2_DIR=%INSTALL_DIR%\msys2"
 set "DATA_DIR=%INSTALL_DIR%\data"
 set "SCRIPTS_DIR=%INSTALL_DIR%\scripts"
@@ -453,7 +436,6 @@ set "PID_FILE=%INSTALL_DIR%\mark-dawn.pid"
 set "LOG_FILE=%LOGS_DIR%\mark-dawn.log"
 set "PYTHON=%MSYS2_DIR%\mingw64\bin\python.exe"
 
-REM Set environment variables consumed by Python scripts
 set "MARK_DAWN_DATA=%DATA_DIR%"
 set "MARK_DAWN_SCRIPTS=%SCRIPTS_DIR%"
 set "MARK_DAWN_LOG=%LOG_FILE%"
@@ -462,7 +444,6 @@ set "TESSDATA_PREFIX=%MSYS2_DIR%\mingw64\share\tessdata"
 set "PATH=%MSYS2_DIR%\mingw64\bin;%MSYS2_DIR%\usr\bin;%PATH%"
 set "PYTHONIOENCODING=utf-8"
 
-REM Ensure directories exist
 if not exist "%DATA_DIR%\Inbox" mkdir "%DATA_DIR%\Inbox"
 if not exist "%DATA_DIR%\Research" mkdir "%DATA_DIR%\Research"
 if not exist "%DATA_DIR%\Inbox_Failed" mkdir "%DATA_DIR%\Inbox_Failed"
@@ -485,9 +466,7 @@ goto help
 
 :start
     echo Starting mark-dawn watcher...
-    REM Launch python in background (detached) using start /B
     start "" /B "%PYTHON%" "%SCRIPTS_DIR%\watcher.py" >> "%LOG_FILE%" 2>&1
-    REM Give it a moment to write PID file
     timeout /t 2 /nobreak > nul
     if exist "%PID_FILE%" (
         set /p PID=<"%PID_FILE%"
@@ -566,7 +545,6 @@ goto help
 
 :install_task
     echo Creating Task Scheduler entry for auto-start on login...
-    REM This command requires administrator rights
     net session >nul 2>&1
     if errorlevel 1 (
         echo FAIL: install-task requires administrator rights
