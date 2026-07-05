@@ -18,21 +18,21 @@ Converts PDF, DOCX, XLSX, PPTX, HTML, CSV, RTF to clean Markdown with:
 
 ### Install it
 
-**Linux (Podman/Docker)** // ***the only working option rn***
+✅ **Linux (Podman/Docker)** // ***the only working option rn***
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.sh | bash
 ```
-**Windows (PowerShell) *(BROKEN. SLOP in PROGRESS)* (MSYS2 Portable)**
+❌ **Windows (PowerShell) *(BROKEN. SLOP in PROGRESS)* (MSYS2 Portable)**
 ```powershell
 iwr -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.ps1" -OutFile "$env:TEMP\install.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"
 ```
-**??MacOS??** ***in the slops rn***
+❌ **??MacOS??** ***in the slops rn***
 ```sh
 ```
 
 ### Use it
 
-**Linux / macOS**
+✅ **Linux / macOS**
 ```
 # Start the background watcher (auto-converts files in ~/Documents/Inbox)
 mark-dawn start
@@ -67,7 +67,7 @@ mark-dawn --help
 mark-dawn -h
 ```
 
-**Windows (PowerShell)**
+❌ **Windows (PowerShell)**
 ```
 # Start watcher
 & "$env:USERPROFILE\mark-dawn\mark-dawn.bat" start
@@ -118,7 +118,7 @@ podman build -t mark-dawn:latest .
 MARK_DAWN_IMAGE=localhost/mark-dawn:latest ./mark-dawn.sh start
 ```
 
-### Deepest kudos to
+👏 ### Deepest kudos to
 - [pymupdf4llm](https://pypi.org/project/pymupdf4llm/)
 - [markitdown](https://pypi.org/project/markitdown/)
 - [ocrmypdf](https://hub.docker.com/r/jbarlow83/ocrmypdf)
