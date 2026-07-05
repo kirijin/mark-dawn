@@ -51,9 +51,27 @@ $Script:PACMAN_PACKAGES = @(
     "mingw-w64-x86_64-python"
     "mingw-w64-x86_64-python-pip"
     "mingw-w64-x86_64-python-pymupdf"
+    "mingw-w64-x86_64-python-setuptools"
+    "mingw-w64-x86_64-python-pip"
+    "mingw-w64-x86_64-python-numpy"
+    "mingw-w64-x86_64-python-pillow"
+    "mingw-w64-x86_64-python-lxml"
+    "mingw-w64-x86_64-python-pyyaml"
+    "mingw-w64-x86_64-python-networkx"
+    "mingw-w64-x86_64-python-bs4"
+    "mingw-w64-x86_64-python-requests"
+    "mingw-w64-x86_64-python-markdownify"
+    "mingw-w64-x86_64-python-markdown-it-py"
     "mingw-w64-x86_64-python-pikepdf"
+    "mingw-w64-x86_64-python-scikit-build-core"
     "mingw-w64-x86_64-cmake"
     "mingw-w64-x86_64-ninja"
+    "mingw-w64-x86_64-make"
+    "mingw-w64-x86_64-gcc"
+    "mingw-w64-x86_64-gcc-libs"
+    "mingw-w64-x86_64-pkg-config"
+    "mingw-w64-x86_64-libxml2"
+    "mingw-w64-x86_64-libxslt"
 )
 
 # Python packages to install via pip (directly into MSYS2 Python)
@@ -700,39 +718,27 @@ function Step-InstallPackages {
 function Step-InstallPythonPackages {
     Write-Step "5/9" "Installing Python packages (pymupdf4llm, markitdown, watchdog)..."
 
-    $pythonExe = Join-PathSafe $Script:_msys2Dir "mingw64\bin\python.exe"
-    $pipExe    = Join-PathSafe $Script:_msys2Dir "mingw64\bin\pip.exe"
-
-    if (-not (Test-Path $pythonExe -PathType Leaf)) {
-        Write-Fail "Python not found: $pythonExe"
-    }
-    if (-not (Test-Path $pipExe -PathType Leaf)) {
-        Write-Fail "pip not found: $pipExe"
+    $bashPath = Join-PathSafe $Script:_msys2Dir "usr\bin\bash.exe"
+    if (-not (Test-Path $bashPath -PathType Leaf)) {
+        Write-Fail "MSYS2 bash not found: $bashPath"
     }
 
     try {
-        # Set PATH so pip can find MSYS2's cmake, ninja, gcc, etc.
-        $msys2Bin  = Join-PathSafe $Script:_msys2Dir "mingw64\bin"
-        $msys2Usr  = Join-PathSafe $Script:_msys2Dir "usr\bin"
-        $env:PATH  = "$msys2Bin;$msys2Usr;$env:PATH"
+        # Run pip through MSYS2's bash login shell so the complete MSYS2
+        # environment is set up (PATH, MSYSTEM, cygwin DLLs, etc.).
+        # This ensures cmake, ninja, gcc, and all MSYS2 Python packages
+        # are findable during any build steps pip may need to perform.
+        $pkgList = $Script:PIP_PACKAGES -join " "
+        $pipCmd  = "pip install --no-cache-dir --no-build-isolation $pkgList 2>&1"
 
-        # Install packages directly into MSYS2's Python (portable, no system pollution)
-        # --no-build-isolation: use MSYS2's pre-built packages instead of rebuilding
-        # --no-cache-dir: avoid disk space issues
-        # No --upgrade: don't touch pre-installed MSYS2 system packages
         Write-Info "Installing via pip (this takes 2-5 minutes)..."
-        $pipArgs = @(
-            "-m", "pip", "install"
-            "--no-cache-dir"
-            "--no-build-isolation"
-        ) + $Script:PIP_PACKAGES
-
-        $proc = Start-Process -FilePath $pythonExe -ArgumentList $pipArgs -Wait -PassThru -NoNewWindow
+        $env:MSYSTEM = "MINGW64"
+        $proc = Start-Process -FilePath $bashPath -ArgumentList "-lc", $pipCmd -Wait -PassThru -NoNewWindow
         if ($proc.ExitCode -ne 0) {
             throw "Pip install failed (exit $($proc.ExitCode))"
         }
 
-        # Verify imports
+        # Verify imports through MSYS2 bash
         Write-Info "Verifying Python packages..."
         $imports = @(
             "import pymupdf4llm; print('pymupdf4llm:', pymupdf4llm.__version__)"
@@ -740,7 +746,8 @@ function Step-InstallPythonPackages {
             "import watchdog; print('watchdog:', watchdog.__version__)"
         )
         foreach ($importCmd in $imports) {
-            $proc = Start-Process -FilePath $pythonExe -ArgumentList "-c", $importCmd -Wait -PassThru -NoNewWindow
+            $verifyCmd = "python -c `"$importCmd`" 2>&1"
+            $proc = Start-Process -FilePath $bashPath -ArgumentList "-lc", $verifyCmd -Wait -PassThru -NoNewWindow
             if ($proc.ExitCode -ne 0) {
                 throw "Import verification failed for: $importCmd"
             }
@@ -897,17 +904,17 @@ function Step-Verify {
     }
 
     # Verify Python packages via import check
-    $pythonPath = Join-PathSafe $Script:_msys2Dir "mingw64\bin\python.exe"
-    if (Test-Path $pythonPath -PathType Leaf) {
+    $bashPath = Join-PathSafe $Script:_msys2Dir "usr\bin\bash.exe"
+    if (Test-Path $bashPath -PathType Leaf) {
         $imports = @("pymupdf4llm", "markitdown", "watchdog")
         foreach ($mod in $imports) {
-            $proc = Start-Process -FilePath $pythonPath -ArgumentList "-c", "import $mod" -Wait -PassThru -NoNewWindow
+            $proc = Start-Process -FilePath $bashPath -ArgumentList "-lc", "python -c 'import $mod' 2>&1" -Wait -PassThru -NoNewWindow
             if ($proc.ExitCode -ne 0) {
                 $failures += "Python module import failed: $mod"
             }
         }
     } else {
-        $failures += "MSYS2 Python not found at: $pythonPath"
+        $failures += "MSYS2 bash not found for verification"
     }
 
     # Check data directories
