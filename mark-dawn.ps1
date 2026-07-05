@@ -1,21 +1,23 @@
 <#
 .SYNOPSIS
-    mark-dawn portable installer for Windows
+    mark-dawn portable installer for Windows (Option B)
 .DESCRIPTION
     Installs mark-dawn — a universal document-to-Markdown pipeline — as a fully
     portable application on Windows 10/11 x64.  No WSL, no containers, no
     administrator rights required (except for Task Scheduler auto-start).
+
+    Architecture: Python.org embedded distribution + pip for Python packages,
+    MSYS2 only for system tool binaries (tesseract, ghostscript, qpdf).
 
     Data directories match the Linux convention so the workflow is identical:
       %USERPROFILE%\Documents\Inbox         Drop files here
       %USERPROFILE%\Documents\Research      Converted .md files appear here
       %USERPROFILE%\Documents\Inbox_Failed  Failed conversions land here
 
-    SHA256-verified downloads, idempotent execution, automatic rollback, and
-    structured logging throughout.
+    SHA256-verified downloads, idempotent execution, structured logging.
 
 .NOTES
-    Version  : 1.0.0
+    Version  : 2.0.0
     Author   : kirijin
     Requires : Windows 10/11 x64, PowerShell 5.1+
 #>
@@ -24,10 +26,26 @@
 # CONFIGURATION — pinned artifacts with SHA256 verification
 # ============================================================================
 
-# MSYS2 — pin to a specific release for reproducibility
-$Script:MSYS2_VERSION = "2025-02-21"
-$Script:MSYS2_URL     = "https://github.com/msys2/msys2-installer/releases/download/$($Script:MSYS2_VERSION)/msys2-base-x86_64-latest.sfx.exe"
-$Script:MSYS2_SHA256  = "0019dfc4b32d63c1392aa264aed2253c1e0c2fb09216f8e2cc269bbfb8bb49b5"
+# Python.org embedded distribution (no installer needed, just unzip)
+$Script:PYTHON_VERSION = "3.12.4"
+$Script:PYTHON_URL     = "https://www.python.org/ftp/python/$($Script:PYTHON_VERSION)/python-$($Script:PYTHON_VERSION)-embed-amd64.zip"
+$Script:PYTHON_SHA256  = "15fea3c9367653a85086fe37216b4d1a1c78688fa5e1587e1db0b0f658856564"
+
+# get-pip.py for bootstrapping pip into embedded Python
+$Script:GETPIP_URL     = "https://bootstrap.pypa.io/get-pip.py"
+$Script:GETPIP_SHA256  = "a341e1a43e38001c551a1508a73ff23636a11970b61d901d9a1cad2a18f57055"
+
+# MSYS2 — base system SFX for tool extraction only
+$Script:MSYS2_VERSION  = "2026-06-11"
+$Script:MSYS2_URL      = "https://github.com/msys2/msys2-installer/releases/download/$($Script:MSYS2_VERSION)/msys2-base-x86_64-$($Script:MSYS2_VERSION.Replace('-','')).sfx.exe"
+$Script:MSYS2_SHA256   = "c105946e64e08f099ac0e4647461ce762b95333ad211777666476a9a41451d65"
+
+# MSYS2 tool packages to install via pacman (no Python packages!)
+$Script:MSYS2_TOOL_PACKAGES = @(
+    "mingw-w64-x86_64-tesseract-ocr"
+    "mingw-w64-x86_64-ghostscript"
+    "mingw-w64-x86_64-qpdf"
+)
 
 # Tesseract language models (6 languages)
 $Script:TESSDATA_BASE_URL = "https://github.com/tesseract-ocr/tessdata/raw/main"
@@ -42,42 +60,7 @@ $Script:TESSDATA_SHA256   = @{
 }
 $Script:TESSDATA_MIN_SIZE = 1MB
 
-# MSYS2 packages to install via pacman
-$Script:PACMAN_PACKAGES = @(
-    "mingw-w64-x86_64-tesseract-ocr"
-    "mingw-w64-x86_64-tesseract-ocr-data"
-    "mingw-w64-x86_64-ocrmypdf"
-    "mingw-w64-x86_64-ghostscript"
-    "mingw-w64-x86_64-python"
-    "mingw-w64-x86_64-python-pip"
-    "mingw-w64-x86_64-python-pymupdf"
-    "mingw-w64-x86_64-python-setuptools"
-    "mingw-w64-x86_64-python-pip"
-    "mingw-w64-x86_64-python-numpy"
-    "mingw-w64-x86_64-python-pillow"
-    "mingw-w64-x86_64-python-lxml"
-    "mingw-w64-x86_64-python-pyyaml"
-    "mingw-w64-x86_64-python-networkx"
-    "mingw-w64-x86_64-python-bs4"
-    "mingw-w64-x86_64-python-requests"
-    "mingw-w64-x86_64-python-markdownify"
-    "mingw-w64-x86_64-python-markdown-it-py"
-    "mingw-w64-x86_64-python-pikepdf"
-    "mingw-w64-x86_64-python-scikit-build-core"
-    "mingw-w64-x86_64-cmake"
-    "mingw-w64-x86_64-ninja"
-    "mingw-w64-x86_64-make"
-    "mingw-w64-x86_64-gcc"
-    "mingw-w64-x86_64-gcc-libs"
-    "mingw-w64-x86_64-pkg-config"
-    "mingw-w64-x86_64-libxml2"
-    "mingw-w64-x86_64-libxslt"
-)
-
-# Python packages to install via pip (directly into MSYS2 Python)
-# Note: markitdown[all] requires pikepdf which needs cmake+ninja to build.
-# Instead, we install pure-Python format support separately.
-# PDFs go through convert_pdf.py (pymupdf4llm), not markitdown.
+# Python packages to install via pip (from PyPI win_amd64 wheels)
 $Script:PIP_PACKAGES = @(
     "pymupdf4llm"
     "markitdown"
@@ -111,20 +94,22 @@ param(
 # ============================================================================
 # INTERNAL STATE (set after parameter resolution)
 # ============================================================================
-$Script:_installDir    = ""
-$Script:_dataDir       = ""
-$Script:_msys2Dir      = ""
-$Script:_venvDir       = ""
-$Script:_scriptsDir    = ""
-$Script:_logsDir       = ""
-$Script:_tessdataDir   = ""
-$Script:_launcherPath  = ""
-$Script:_pidFile       = ""
-$Script:_logFile       = ""
-$Script:_installLog    = ""
-$Script:_stateFile     = ""
-$Script:_installVersion = "1.0.0"
-$Script:_logLevelNum  = 1  # 0=Debug 1=Info 2=Warn 3=Error
+$Script:_installDir     = ""
+$Script:_dataDir        = ""
+$Script:_pythonDir      = ""
+$Script:_msys2Dir       = ""
+$Script:_scriptsDir     = ""
+$Script:_logsDir        = ""
+$Script:_tessdataDir    = ""
+$Script:_launcherPath   = ""
+$Script:_pidFile        = ""
+$Script:_logFile        = ""
+$Script:_installLog     = ""
+$Script:_stateFile      = ""
+$Script:_pythonExe      = ""
+$Script:_installVersion = "2.0.0"
+$Script:_logLevelNum    = 1  # 0=Debug 1=Info 2=Warn 3=Error
+$Script:msys2InstallerPath = ""
 
 # ============================================================================
 # LOGGING HELPERS
@@ -156,9 +141,7 @@ function Write-Log {
         if ($Script:_installLog) {
             $logLine | Out-File -FilePath $Script:_installLog -Append -Encoding utf8 -ErrorAction SilentlyContinue
         }
-    } catch {
-        # Can't log the logging failure — suppress
-    }
+    } catch {}
 }
 
 function Write-Step {
@@ -197,8 +180,7 @@ function Assert-PathSafe {
 
 function Join-PathSafe {
     param([string]$Parent, [string]$Child)
-    $result = [System.IO.Path]::Combine($Parent, $Child)
-    return $result
+    return [System.IO.Path]::Combine($Parent, $Child)
 }
 
 function Ensure-Directory {
@@ -293,13 +275,11 @@ function Invoke-DownloadWithRetry {
             }
             Invoke-WebRequest @params
 
-            # Verify size
             $fileInfo = Get-Item $tempFile -ErrorAction Stop
             if ($fileInfo.Length -eq 0) {
                 throw "Downloaded file is empty"
             }
 
-            # Verify hash
             if ($ExpectedHash) {
                 if (-not (Test-Sha256 -FilePath $tempFile -ExpectedHash $ExpectedHash)) {
                     Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
@@ -307,7 +287,6 @@ function Invoke-DownloadWithRetry {
                 }
             }
 
-            # Atomic: temp -> final
             if (Test-Path $OutFile -PathType Leaf) {
                 Remove-Item -Path $OutFile -Force -ErrorAction Stop
             }
@@ -374,7 +353,7 @@ function Get-InstallState {
 function Set-InstallState {
     param(
         [string]$Step,
-        [string]$Status,   # "ok" | "failed"
+        [string]$Status,
         [string]$ErrorMsg = ""
     )
     try {
@@ -442,15 +421,35 @@ function Assert-Admin {
 }
 
 # ============================================================================
+# PYTHON HELPERS
+# ============================================================================
+function Invoke-Python {
+    param(
+        [string[]]$ArgumentList,
+        [int[]]$ExpectedExitCodes = @(0),
+        [switch]$PassThru
+    )
+    if (-not (Test-Path $Script:_pythonExe -PathType Leaf)) {
+        throw "Python not found at: $Script:_pythonExe"
+    }
+    $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList $ArgumentList -Wait -PassThru -NoNewWindow
+    if ($ExpectedExitCodes -and ($ExpectedExitCodes -notcontains $proc.ExitCode)) {
+        throw "Python exited with code $($proc.ExitCode) (expected $ExpectedExitCodes): $($ArgumentList -join ' ')"
+    }
+    if ($PassThru) { return $proc.ExitCode }
+}
+
+# ============================================================================
 # MSYS2 HELPERS
 # ============================================================================
 function Invoke-Msys2Bash {
     param(
+        [string]$Msys2Dir,
         [string]$Command,
         [int[]]$ExpectedExitCodes = @(0),
         [switch]$PassThru
     )
-    $bashPath = Join-PathSafe $Script:_msys2Dir "usr\bin\bash.exe"
+    $bashPath = Join-PathSafe $Msys2Dir "usr\bin\bash.exe"
     if (-not (Test-Path $bashPath -PathType Leaf)) {
         throw "MSYS2 bash not found at: $bashPath"
     }
@@ -469,27 +468,15 @@ function Invoke-Msys2Bash {
     }
 }
 
-function Test-PacmanPackageInstalled {
-    param([string]$PackageName)
-    try {
-        $bashPath = Join-PathSafe $Script:_msys2Dir "usr\bin\bash.exe"
-        $proc = Start-Process -FilePath $bashPath -ArgumentList "-lc", "pacman -Q '$PackageName' 2>/dev/null" -Wait -PassThru -NoNewWindow
-        return ($proc.ExitCode -eq 0)
-    } catch {
-        return $false
-    }
-}
-
 # ============================================================================
 # INSTALLATION STEP FUNCTIONS
 # ============================================================================
 function Step-Init {
-    Write-Step "0/9" "Resolving paths and creating directories..."
+    Write-Step "0/14" "Resolving paths and creating directories..."
 
     if (-not $Script:_installDir) { $Script:_installDir = $Script:DEFAULT_INSTALL_DIR }
     if (-not $Script:_dataDir) { $Script:_dataDir = $Script:DEFAULT_DATA_DIR }
 
-    # Resolve to absolute paths
     try {
         $resolved = Resolve-Path $Script:_installDir -ErrorAction SilentlyContinue
         if ($resolved) { $Script:_installDir = $resolved.Path }
@@ -500,22 +487,20 @@ function Step-Init {
         if ($resolved) { $Script:_dataDir = $resolved.Path }
     } catch {}
 
-    # Validate
     Assert-PathSafe $Script:_installDir
     Assert-PathSafe $Script:_dataDir
 
-    # Derive subdirectories
-    $Script:_msys2Dir     = Join-PathSafe $Script:_installDir "msys2"
-    $Script:_venvDir      = Join-PathSafe $Script:_installDir "venv"
-    $Script:_scriptsDir   = Join-PathSafe $Script:_installDir "scripts"
-    $Script:_logsDir      = Join-PathSafe $Script:_installDir "logs"
-    $Script:_tessdataDir  = Join-PathSafe $Script:_msys2Dir "mingw64\share\tessdata"
-    $Script:_launcherPath = Join-PathSafe $Script:_installDir "mark-dawn.bat"
-    $Script:_pidFile      = Join-PathSafe $Script:_installDir "mark-dawn.pid"
-    $Script:_logFile      = Join-PathSafe $Script:_logsDir "mark-dawn.log"
-    $Script:_stateFile    = Join-PathSafe $Script:_installDir ".install-state.json"
+    $Script:_pythonDir     = Join-PathSafe $Script:_installDir "python"
+    $Script:_msys2Dir      = Join-PathSafe $Script:_installDir ".msys2"
+    $Script:_scriptsDir    = Join-PathSafe $Script:_installDir "scripts"
+    $Script:_logsDir       = Join-PathSafe $Script:_installDir "logs"
+    $Script:_tessdataDir   = Join-PathSafe $Script:_installDir "tessdata"
+    $Script:_launcherPath  = Join-PathSafe $Script:_installDir "mark-dawn.bat"
+    $Script:_pidFile       = Join-PathSafe $Script:_installDir "mark-dawn.pid"
+    $Script:_logFile       = Join-PathSafe $Script:_logsDir "mark-dawn.log"
+    $Script:_stateFile     = Join-PathSafe $Script:_installDir ".install-state.json"
+    $Script:_pythonExe     = Join-PathSafe $Script:_pythonDir "python.exe"
 
-    # Create directories
     try {
         Ensure-Directory $Script:_installDir
         Ensure-Directory (Join-PathSafe $Script:_dataDir "Inbox")
@@ -523,7 +508,6 @@ function Step-Init {
         Ensure-Directory (Join-PathSafe $Script:_dataDir "Inbox_Failed")
         Ensure-Directory $Script:_logsDir
 
-        # Verify write access
         $testFile = Join-PathSafe $Script:_installDir ".write-test"
         "test" | Out-File -FilePath $testFile -Encoding ascii -Force -ErrorAction Stop
         Remove-Item -Path $testFile -Force -ErrorAction Stop
@@ -531,16 +515,13 @@ function Step-Init {
         Write-Fail "Cannot write to '$Script:_installDir'. Check permissions: $_"
     }
 
-    # Initialize install log
     $Script:_installLog = Join-PathSafe $Script:_logsDir "install-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
     try {
         "=== mark-dawn installer v$($Script:_installVersion) ===" | Out-File -FilePath $Script:_installLog -Encoding utf8 -Force
         "Started: $(Get-Date -Format 'o')" | Out-File -FilePath $Script:_installLog -Append -Encoding utf8
         "InstallDir: $($Script:_installDir)" | Out-File -FilePath $Script:_installLog -Append -Encoding utf8
         "DataDir: $($Script:_dataDir)" | Out-File -FilePath $Script:_installLog -Append -Encoding utf8
-    } catch {
-        # Non-fatal if we can't log to file
-    }
+    } catch {}
 
     Write-OK "Install directory: $($Script:_installDir)"
     Write-OK "Data directory: $($Script:_dataDir)"
@@ -548,29 +529,166 @@ function Step-Init {
     Set-InstallState -Step "init" -Status "ok"
 }
 
-function Step-DownloadMsys2 {
-    Write-Step "1/9" "Downloading MSYS2 portable installer (~100 MB)..."
+function Step-DownloadPython {
+    Write-Step "1/14" "Downloading Python $($Script:PYTHON_VERSION) embedded distribution (~11 MB)..."
     $tempDir = Join-PathSafe $env:TEMP "mark-dawn-installer"
     Ensure-Directory $tempDir
-    $installerPath = Join-PathSafe $tempDir "msys2-installer.exe"
+    $pythonZip = Join-PathSafe $tempDir "python-embed.zip"
+
+    try {
+        Invoke-DownloadWithRetry -Url $Script:PYTHON_URL -OutFile $pythonZip `
+            -MaxRetries $Script:MaxRetries -TimeoutSec $Script:TimeoutSec `
+            -ExpectedHash $Script:PYTHON_SHA256 -Force:$Script:ForceRedownload
+    } catch {
+        Write-Fail "Failed to download Python: $_"
+    }
+
+    $Script:pythonZipPath = $pythonZip
+    Write-OK "Python embedded zip ready (SHA256 verified)"
+    Set-InstallState -Step "python_downloaded" -Status "ok"
+}
+
+function Step-DownloadGetPip {
+    Write-Step "2/14" "Downloading get-pip.py..."
+    $tempDir = Join-PathSafe $env:TEMP "mark-dawn-installer"
+    Ensure-Directory $tempDir
+    $getPipPath = Join-PathSafe $tempDir "get-pip.py"
+
+    try {
+        Invoke-DownloadWithRetry -Url $Script:GETPIP_URL -OutFile $getPipPath `
+            -MaxRetries $Script:MaxRetries -TimeoutSec $Script:TimeoutSec `
+            -ExpectedHash $Script:GETPIP_SHA256 -Force:$Script:ForceRedownload
+    } catch {
+        Write-Fail "Failed to download get-pip.py: $_"
+    }
+
+    $Script:getPipPath = $getPipPath
+    Write-OK "get-pip.py ready (SHA256 verified)"
+    Set-InstallState -Step "getpip_downloaded" -Status "ok"
+}
+
+function Step-ExtractPython {
+    Write-Step "3/14" "Extracting Python $($Script:PYTHON_VERSION) embedded..."
+
+    $pythonExeCheck = Join-PathSafe $Script:_pythonDir "python.exe"
+    if ((Test-Path $pythonExeCheck -PathType Leaf) -and -not $Script:ForceRedownload) {
+        Write-OK "Python already extracted, skipping"
+        Set-InstallState -Step "python_extracted" -Status "ok"
+        return
+    }
+
+    try {
+        Remove-DirectorySafe $Script:_pythonDir -Force
+        Ensure-Directory $Script:_pythonDir
+
+        Expand-Archive -Path $Script:pythonZipPath -DestinationPath $Script:_pythonDir -Force -ErrorAction Stop
+
+        if (-not (Test-Path $pythonExeCheck -PathType Leaf)) {
+            throw "python.exe not found after extraction"
+        }
+
+        # Patch python312._pth to enable site-packages
+        $pthFile = Join-PathSafe $Script:_pythonDir "python312._pth"
+        if (Test-Path $pthFile -PathType Leaf) {
+            $pthContent = Get-Content -Path $pthFile -Raw -Encoding utf8
+            $pthContent = $pthContent -replace '#import site', 'import site'
+            $pthContent | Out-File -FilePath $pthFile -Encoding utf8 -Force
+            Write-Log "Info" "Patched python312._pth to enable site-packages" -NoConsole
+        } else {
+            Write-Log "Warn" "python312._pth not found (may be different version)" -NoConsole
+        }
+
+        Write-OK "Python extracted to $($Script:_pythonDir)"
+        Set-InstallState -Step "python_extracted" -Status "ok"
+    } catch {
+        Remove-DirectorySafe $Script:_pythonDir -Force
+        Write-Fail "Python extraction failed: $_"
+    }
+}
+
+function Step-InstallPip {
+    Write-Step "4/14" "Installing pip into embedded Python..."
+
+    $pipCheck = Join-PathSafe $Script:_pythonDir "Scripts\pip.exe"
+    if ((Test-Path $pipCheck -PathType Leaf) -and -not $Script:ForceRedownload) {
+        Write-OK "pip already installed, skipping"
+        Set-InstallState -Step "pip_installed" -Status "ok"
+        return
+    }
+
+    try {
+        # Bootstrap pip into embedded Python
+        Invoke-Python -ArgumentList @($Script:getPipPath, "--no-warn-script-location")
+
+        if (-not (Test-Path $pipCheck -PathType Leaf)) {
+            throw "pip.exe not found after bootstrap"
+        }
+
+        Write-OK "pip installed successfully"
+        Set-InstallState -Step "pip_installed" -Status "ok"
+    } catch {
+        Write-Fail "pip installation failed: $_"
+    }
+}
+
+function Step-InstallPythonPackages {
+    Write-Step "5/14" "Installing Python packages via pip ($($Script:PIP_PACKAGES.Count) packages)..."
+
+    try {
+        $pkgList = $Script:PIP_PACKAGES -join " "
+        Write-Info "Installing: $pkgList"
+
+        $pipArgs = @("-m", "pip", "install", "--no-cache-dir") + $Script:PIP_PACKAGES
+        $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList $pipArgs -Wait -PassThru -NoNewWindow
+        if ($proc.ExitCode -ne 0) {
+            throw "pip install failed (exit $($proc.ExitCode))"
+        }
+
+        # Verify imports
+        Write-Info "Verifying Python packages..."
+        $imports = @(
+            "import pymupdf4llm; print('pymupdf4llm:', pymupdf4llm.__version__)"
+            "import markitdown; print('markitdown: ok')"
+            "import watchdog; print('watchdog:', watchdog.__version__)"
+        )
+        foreach ($importCmd in $imports) {
+            $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList @("-c", $importCmd) -Wait -PassThru -NoNewWindow
+            if ($proc.ExitCode -ne 0) {
+                throw "Import verification failed for: $importCmd"
+            }
+        }
+
+        Write-OK "Python packages installed and verified"
+        Set-InstallState -Step "python_packages_installed" -Status "ok"
+    } catch {
+        Write-Fail "Failed to install Python packages: $_"
+    }
+}
+
+function Step-DownloadMsys2 {
+    Write-Step "6/14" "Downloading MSYS2 base system SFX (~50 MB)..."
+    $tempDir = Join-PathSafe $env:TEMP "mark-dawn-installer"
+    Ensure-Directory $tempDir
+    $installerPath = Join-PathSafe $tempDir "msys2-sfx.exe"
 
     try {
         Invoke-DownloadWithRetry -Url $Script:MSYS2_URL -OutFile $installerPath `
             -MaxRetries $Script:MaxRetries -TimeoutSec $Script:TimeoutSec `
             -ExpectedHash $Script:MSYS2_SHA256 -Force:$Script:ForceRedownload
     } catch {
-        Write-Fail "Failed to download MSYS2 installer: $_"
+        Write-Fail "Failed to download MSYS2 SFX: $_"
     }
 
     $Script:msys2InstallerPath = $installerPath
-    Write-OK "MSYS2 installer ready (SHA256 verified)"
+    Write-OK "MSYS2 SFX ready (SHA256 verified)"
     Set-InstallState -Step "msys2_downloaded" -Status "ok"
 }
 
 function Step-ExtractMsys2 {
-    Write-Step "2/9" "Extracting MSYS2 (2-5 minutes)..."
+    Write-Step "7/14" "Extracting MSYS2 base system..."
 
     $bashCheck = Join-PathSafe $Script:_msys2Dir "usr\bin\bash.exe"
+
     if ((Test-Path $bashCheck -PathType Leaf) -and -not $Script:ForceRedownload) {
         Write-OK "MSYS2 already extracted, skipping"
         Set-InstallState -Step "msys2_extracted" -Status "ok"
@@ -578,15 +696,14 @@ function Step-ExtractMsys2 {
     }
 
     $parentDir = Split-Path $Script:_installDir -Parent
-    $tempExtract = Join-PathSafe $parentDir "msys2_extract_$(Get-Random)"
-    $msys2Contents = Join-PathSafe $tempExtract "msys2"
+    $tempExtract = Join-PathSafe $parentDir ".msys2-extract"
 
     try {
-        # Clean up any previous failed extraction
+        Remove-DirectorySafe $Script:_msys2Dir -Force
         Remove-DirectorySafe $tempExtract -Force
         Ensure-Directory $tempExtract
 
-        Write-Log "Info" "Extracting to temp: $tempExtract" -NoConsole
+        Write-Log "Info" "Extracting SFX to: $tempExtract" -NoConsole
 
         $proc = Start-Process -FilePath $Script:msys2InstallerPath `
             -ArgumentList "-y", "-o`"$tempExtract`"" `
@@ -596,28 +713,16 @@ function Step-ExtractMsys2 {
             throw "Extractor exited with code $($proc.ExitCode)"
         }
 
+        $msys2Contents = Join-PathSafe $tempExtract "msys2"
         if (-not (Test-Path $msys2Contents -PathType Container)) {
             throw "Expected extraction directory not found: $msys2Contents"
         }
 
-        # Remove existing MSYS2 dir if present
-        Remove-DirectorySafe $Script:_msys2Dir -Force
-
-        # Atomic move
+        # Move to install dir as .msys2
         Move-Item -Path $msys2Contents -Destination $Script:_msys2Dir -Force -ErrorAction Stop
 
-        # Verify critical binaries
-        $criticalBins = @(
-            "usr\bin\bash.exe",
-            "usr\bin\pacman.exe",
-            "usr\bin\pacman-key.exe",
-            "mingw64\bin\pacman.exe"
-        )
-        foreach ($bin in $criticalBins) {
-            $binPath = Join-PathSafe $Script:_msys2Dir $bin
-            if (-not (Test-Path $binPath -PathType Leaf)) {
-                throw "Critical MSYS2 binary missing after extraction: $bin"
-            }
+        if (-not (Test-Path $bashCheck -PathType Leaf)) {
+            throw "bash.exe not found after extraction"
         }
 
         Write-OK "MSYS2 extracted to $($Script:_msys2Dir)"
@@ -631,48 +736,34 @@ function Step-ExtractMsys2 {
     }
 }
 
-function Step-InitializeMsys2 {
-    Write-Step "3/9" "Initializing MSYS2 (3-5 minutes, first-run setup)..."
+function Step-InitMsys2 {
+    Write-Step "8/14" "Initializing MSYS2 pacman keyring (2-3 minutes)..."
 
     if ($Script:SkipInit) {
         Write-Info "Skipping MSYS2 initialization (-SkipInit)"
         if (Test-StepCompleted "msys2_initialized") {
             Write-OK "MSYS2 previously initialized"
         }
+        Set-InstallState -Step "msys2_initialized" -Status "ok"
         return
     }
 
-    $stateFile = Join-PathSafe $Script:_msys2Dir "var\lib\pacman\local\ALPM_DB_VERSION"
-    $bashPath = Join-PathSafe $Script:_msys2Dir "usr\bin\bash.exe"
+    $stateFileCheck = Join-PathSafe $Script:_msys2Dir "var\lib\pacman\local\ALPM_DB_VERSION"
+    if ((Test-Path $stateFileCheck -PathType Leaf) -and -not $Script:ForceRedownload) {
+        Write-OK "MSYS2 already initialized, skipping"
+        Set-InstallState -Step "msys2_initialized" -Status "ok"
+        return
+    }
 
     try {
         Write-Info "Initializing pacman keyring..."
-        $proc = Start-Process -FilePath $bashPath -ArgumentList "-lc", "pacman-key --init 2>&1" -Wait -PassThru -NoNewWindow
-        if ($proc.ExitCode -ne 0) {
-            Write-Log "Warn" "pacman-key --init exit code: $($proc.ExitCode)" -NoConsole
-        }
+        Invoke-Msys2Bash -Msys2Dir $Script:_msys2Dir -Command "pacman-key --init 2>&1" -ExpectedExitCodes @(0, 1)
 
         Write-Info "Populating keyring..."
-        $proc = Start-Process -FilePath $bashPath -ArgumentList "-lc", "pacman-key --populate msys2 mingw64 2>&1" -Wait -PassThru -NoNewWindow
-        if ($proc.ExitCode -ne 0) {
-            Write-Log "Warn" "pacman-key --populate exit code: $($proc.ExitCode)" -NoConsole
-        }
+        Invoke-Msys2Bash -Msys2Dir $Script:_msys2Dir -Command "pacman-key --populate msys2 mingw64 2>&1" -ExpectedExitCodes @(0, 1)
 
-        # First pass: update core (may restart pacman itself)
-        Write-Info "First pass: updating core system..."
-        try {
-            $proc = Start-Process -FilePath $bashPath -ArgumentList "-lc", "pacman -Syu --noconfirm --disable-download-timeout 2>&1" -Wait -PassThru -NoNewWindow
-            Write-Log "Info" "First pass exit code: $($proc.ExitCode)" -NoConsole
-        } catch {
-            Write-Log "Warn" "First pass exited with exception: $_" -NoConsole
-        }
-
-        # Second pass: complete update (safe to ignore errors from first pass)
-        Write-Info "Second pass: completing update..."
-        $proc = Start-Process -FilePath $bashPath -ArgumentList "-lc", "pacman -Su --noconfirm --disable-download-timeout 2>&1" -Wait -PassThru -NoNewWindow
-        if ($proc.ExitCode -ne 0) {
-            Write-Log "Warn" "Second pass exit code: $($proc.ExitCode) (may be ok)" -NoConsole
-        }
+        Write-Info "Updating package databases..."
+        Invoke-Msys2Bash -Msys2Dir $Script:_msys2Dir -Command "pacman -Sy --noconfirm --disable-download-timeout 2>&1" -ExpectedExitCodes @(0, 1)
 
         Write-OK "MSYS2 initialized"
         Set-InstallState -Step "msys2_initialized" -Status "ok"
@@ -681,87 +772,40 @@ function Step-InitializeMsys2 {
     }
 }
 
-function Step-InstallPackages {
-    Write-Step "4/9" "Installing OCR stack via pacman (5-10 minutes)..."
+function Step-InstallMsys2Tools {
+    Write-Step "9/14" "Installing system tools via pacman (tesseract, ghostscript, qpdf)..."
 
-    $bashPath = Join-PathSafe $Script:_msys2Dir "usr\bin\bash.exe"
     try {
-        $pkgList = $Script:PACMAN_PACKAGES -join " "
-        Write-Log "Info" "Installing packages: $pkgList" -NoConsole
+        $pkgList = $Script:MSYS2_TOOL_PACKAGES -join " "
+        Write-Info "Installing packages: $pkgList"
 
-        $proc = Start-Process -FilePath $bashPath `
-            -ArgumentList "-lc", "pacman -S --noconfirm --needed --disable-download-timeout $pkgList 2>&1" `
-            -Wait -PassThru -NoNewWindow
+        Invoke-Msys2Bash -Msys2Dir $Script:_msys2Dir -Command "pacman -S --noconfirm --needed --disable-download-timeout $pkgList 2>&1" -ExpectedExitCodes @(0, 1)
 
-        if ($proc.ExitCode -ne 0) {
-            throw "Pacman exited with code $($proc.ExitCode)"
-        }
-
-        # Verify each package
+        # Verify critical binaries exist
+        $checks = @(
+            @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\tesseract.exe"; Name = "tesseract" }
+            @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\gs.exe";         Name = "ghostscript" }
+            @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\qpdf.exe";       Name = "qpdf" }
+        )
         $missing = @()
-        foreach ($pkg in $Script:PACMAN_PACKAGES) {
-            if (-not (Test-PacmanPackageInstalled $pkg)) {
-                $missing += $pkg
+        foreach ($check in $checks) {
+            if (-not (Test-Path $check.Path -PathType Leaf)) {
+                $missing += $check.Name
             }
         }
         if ($missing.Count -gt 0) {
-            throw "Packages failed to install: $($missing -join ', ')"
+            throw "Tool binaries missing after install: $($missing -join ', ')"
         }
 
-        Write-OK "OCR stack installed"
-        Set-InstallState -Step "packages_installed" -Status "ok"
+        Write-OK "System tools installed"
+        Set-InstallState -Step "msys2_tools_installed" -Status "ok"
     } catch {
-        Write-Fail "Failed to install packages: $_"
-    }
-}
-
-function Step-InstallPythonPackages {
-    Write-Step "5/9" "Installing Python packages (pymupdf4llm, markitdown, watchdog)..."
-
-    $bashPath = Join-PathSafe $Script:_msys2Dir "usr\bin\bash.exe"
-    if (-not (Test-Path $bashPath -PathType Leaf)) {
-        Write-Fail "MSYS2 bash not found: $bashPath"
-    }
-
-    try {
-        # Run pip through MSYS2's bash login shell so the complete MSYS2
-        # environment is set up (PATH, MSYSTEM, cygwin DLLs, etc.).
-        # This ensures cmake, ninja, gcc, and all MSYS2 Python packages
-        # are findable during any build steps pip may need to perform.
-        $pkgList = $Script:PIP_PACKAGES -join " "
-        $pipCmd  = "pip install --no-cache-dir --no-build-isolation $pkgList 2>&1"
-
-        Write-Info "Installing via pip (this takes 2-5 minutes)..."
-        $env:MSYSTEM = "MINGW64"
-        $proc = Start-Process -FilePath $bashPath -ArgumentList "-lc", $pipCmd -Wait -PassThru -NoNewWindow
-        if ($proc.ExitCode -ne 0) {
-            throw "Pip install failed (exit $($proc.ExitCode))"
-        }
-
-        # Verify imports through MSYS2 bash
-        Write-Info "Verifying Python packages..."
-        $imports = @(
-            "import pymupdf4llm; print('pymupdf4llm:', pymupdf4llm.__version__)"
-            "import markitdown; print('markitdown: ok')"
-            "import watchdog; print('watchdog:', watchdog.__version__)"
-        )
-        foreach ($importCmd in $imports) {
-            $verifyCmd = "python -c `"$importCmd`" 2>&1"
-            $proc = Start-Process -FilePath $bashPath -ArgumentList "-lc", $verifyCmd -Wait -PassThru -NoNewWindow
-            if ($proc.ExitCode -ne 0) {
-                throw "Import verification failed for: $importCmd"
-            }
-        }
-
-        Write-OK "Python packages installed and verified"
-        Set-InstallState -Step "python_deps_installed" -Status "ok"
-    } catch {
-        Write-Fail "Failed to install Python packages: $_"
+        Write-Fail "Failed to install system tools: $_"
     }
 }
 
 function Step-DownloadTessdata {
-    Write-Step "6/9" "Downloading language models ($($Script:TESSDATA_LANGS.Count) languages)..."
+    Write-Step "10/14" "Downloading language models ($($Script:TESSDATA_LANGS.Count) languages)..."
 
     Ensure-Directory $Script:_tessdataDir
 
@@ -773,7 +817,6 @@ function Step-DownloadTessdata {
         $url = "$($Script:TESSDATA_BASE_URL)/$lang.traineddata"
         $expectedHash = $Script:TESSDATA_SHA256[$lang]
 
-        # Check if already downloaded and valid
         if ((Test-Path $dest -PathType Leaf) -and -not $Script:ForceRedownload) {
             if ($Script:SkipVerification -or (Test-Sha256 -FilePath $dest -ExpectedHash $expectedHash)) {
                 $succeeded += $lang
@@ -791,13 +834,11 @@ function Step-DownloadTessdata {
                 -MaxRetries $Script:MaxRetries -TimeoutSec $Script:TimeoutSec `
                 -ExpectedHash $expectedHash -Force:$true
 
-            # Ensure minimum size
             $fileInfo = Get-Item $tempDest
             if ($fileInfo.Length -lt $Script:TESSDATA_MIN_SIZE) {
                 throw "File too small ($($fileInfo.Length) bytes) — download may be truncated"
             }
 
-            # Rename to final
             if (Test-Path $dest) { Remove-Item $dest -Force }
             Rename-Item $tempDest -NewName "$lang.traineddata"
             $succeeded += $lang
@@ -807,7 +848,6 @@ function Step-DownloadTessdata {
             $failed += $lang
         }
 
-        # Brief pause between downloads to be polite
         Start-Sleep -Milliseconds 500
     }
 
@@ -823,7 +863,7 @@ function Step-DownloadTessdata {
 }
 
 function Step-GenerateScripts {
-    Write-Step "7/9" "Generating Python scripts..."
+    Write-Step "11/14" "Generating Python scripts..."
 
     Ensure-Directory $Script:_scriptsDir
 
@@ -831,21 +871,18 @@ function Step-GenerateScripts {
     $convertPath = Join-PathSafe $Script:_scriptsDir "convert_pdf.py"
 
     try {
-        # watcher.py
         $watcherContent = Get-WatcherScript
         $watcherContent | Out-File -FilePath $watcherPath -Encoding utf8 -Force -ErrorAction Stop
 
-        # convert_pdf.py
         $convertContent = Get-ConvertScript
         $convertContent | Out-File -FilePath $convertPath -Encoding utf8 -Force -ErrorAction Stop
 
-        # Verify scripts are valid Python
-        $pythonPath = Join-PathSafe $Script:_msys2Dir "mingw64\bin\python.exe"
-        if (Test-Path $pythonPath) {
-            $proc = Start-Process -FilePath $pythonPath -ArgumentList "-m", "py_compile", $watcherPath -Wait -PassThru -NoNewWindow
+        # Verify scripts with Python syntax check
+        if (Test-Path $Script:_pythonExe -PathType Leaf) {
+            $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList @("-m", "py_compile", $watcherPath) -Wait -PassThru -NoNewWindow
             if ($proc.ExitCode -ne 0) { Write-Log "Warn" "watcher.py syntax check failed" -NoConsole }
 
-            $proc = Start-Process -FilePath $pythonPath -ArgumentList "-m", "py_compile", $convertPath -Wait -PassThru -NoNewWindow
+            $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList @("-m", "py_compile", $convertPath) -Wait -PassThru -NoNewWindow
             if ($proc.ExitCode -ne 0) { Write-Log "Warn" "convert_pdf.py syntax check failed" -NoConsole }
         }
 
@@ -857,13 +894,12 @@ function Step-GenerateScripts {
 }
 
 function Step-GenerateLauncher {
-    Write-Step "8/9" "Generating mark-dawn.bat launcher..."
+    Write-Step "12/14" "Generating mark-dawn.bat launcher..."
 
     try {
         $launcherContent = Get-LauncherScript
         $launcherContent | Out-File -FilePath $Script:_launcherPath -Encoding ascii -Force -ErrorAction Stop
 
-        # Verify launcher exists and has reasonable size
         $fileInfo = Get-Item $Script:_launcherPath
         if ($fileInfo.Length -lt 2000) {
             throw "Launcher file too small ($($fileInfo.Length) bytes)"
@@ -877,17 +913,16 @@ function Step-GenerateLauncher {
 }
 
 function Step-Verify {
-    Write-Step "9/9" "Verifying installation..."
+    Write-Step "13/14" "Verifying installation..."
 
     $failures = @()
 
     # Check critical binaries
     $checks = @(
-        @{ Path = Join-PathSafe $Script:_msys2Dir "usr\bin\bash.exe";       Name = "bash" }
-        @{ Path = Join-PathSafe $Script:_msys2Dir "usr\bin\pacman.exe";     Name = "pacman" }
+        @{ Path = $Script:_pythonExe;                                Name = "python.exe" }
         @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\tesseract.exe"; Name = "tesseract" }
-        @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\gs.exe";     Name = "ghostscript" }
-        @{ Path = Join-PathSafe $Script:_launcherPath;                        Name = "launcher" }
+        @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\gs.exe";      Name = "ghostscript" }
+        @{ Path = Join-PathSafe $Script:_launcherPath;               Name = "mark-dawn.bat" }
     )
     foreach ($check in $checks) {
         if (-not (Test-Path $check.Path -PathType Leaf)) {
@@ -903,18 +938,17 @@ function Step-Verify {
         }
     }
 
-    # Verify Python packages via import check
-    $bashPath = Join-PathSafe $Script:_msys2Dir "usr\bin\bash.exe"
-    if (Test-Path $bashPath -PathType Leaf) {
+    # Verify pip and key modules
+    if (Test-Path $Script:_pythonExe -PathType Leaf) {
         $imports = @("pymupdf4llm", "markitdown", "watchdog")
         foreach ($mod in $imports) {
-            $proc = Start-Process -FilePath $bashPath -ArgumentList "-lc", "python -c 'import $mod' 2>&1" -Wait -PassThru -NoNewWindow
+            $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList @("-c", "import $mod") -Wait -PassThru -NoNewWindow
             if ($proc.ExitCode -ne 0) {
                 $failures += "Python module import failed: $mod"
             }
         }
     } else {
-        $failures += "MSYS2 bash not found for verification"
+        $failures += "Python not found for verification"
     }
 
     # Check data directories
@@ -939,7 +973,7 @@ function Step-Verify {
 }
 
 function Step-Complete {
-    Write-Step "finished" "Installation complete!"
+    Write-Step "14/14" "Installation complete!"
 
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Green
@@ -976,19 +1010,24 @@ function Invoke-Install {
     Write-Host ""
     Write-Host "=== mark-dawn installer v$($Script:_installVersion) ===" -ForegroundColor Cyan
     Write-Host "Universal Document -> Markdown Pipeline for Windows" -ForegroundColor Cyan
+    Write-Host "Architecture: Python.org embedded + pip + MSYS2 tools" -ForegroundColor Cyan
     Write-Host ""
 
     $steps = @(
-        @{ Name = "init";              Desc = "Initialize directories";         Func = ${function:Step-Init} }
-        @{ Name = "msys2_downloaded";  Desc = "Download MSYS2";                Func = ${function:Step-DownloadMsys2} }
-        @{ Name = "msys2_extracted";   Desc = "Extract MSYS2";                 Func = ${function:Step-ExtractMsys2} }
-        @{ Name = "msys2_initialized"; Desc = "Initialize MSYS2";              Func = ${function:Step-InitializeMsys2} }
-        @{ Name = "packages_installed";Desc = "Install OCR packages";          Func = ${function:Step-InstallPackages} }
-        @{ Name = "python_deps_installed"; Desc = "Install Python packages";   Func = ${function:Step-InstallPythonPackages} }
-        @{ Name = "tessdata_downloaded"; Desc = "Download language models";    Func = ${function:Step-DownloadTessdata} }
-        @{ Name = "scripts_generated"; Desc = "Generate Python scripts";       Func = ${function:Step-GenerateScripts} }
-        @{ Name = "launcher_generated";Desc = "Generate launcher";             Func = ${function:Step-GenerateLauncher} }
-        @{ Name = "verified";          Desc = "Verify installation";           Func = ${function:Step-Verify} }
+        @{ Name = "init";                    Desc = "Initialize directories";           Func = ${function:Step-Init} }
+        @{ Name = "python_downloaded";       Desc = "Download Python embedded";         Func = ${function:Step-DownloadPython} }
+        @{ Name = "getpip_downloaded";       Desc = "Download get-pip.py";              Func = ${function:Step-DownloadGetPip} }
+        @{ Name = "python_extracted";        Desc = "Extract Python";                   Func = ${function:Step-ExtractPython} }
+        @{ Name = "pip_installed";           Desc = "Install pip";                      Func = ${function:Step-InstallPip} }
+        @{ Name = "python_packages_installed"; Desc = "Install Python packages";        Func = ${function:Step-InstallPythonPackages} }
+        @{ Name = "msys2_downloaded";        Desc = "Download MSYS2";                   Func = ${function:Step-DownloadMsys2} }
+        @{ Name = "msys2_extracted";         Desc = "Extract MSYS2";                    Func = ${function:Step-ExtractMsys2} }
+        @{ Name = "msys2_initialized";       Desc = "Initialize MSYS2 keyring";         Func = ${function:Step-InitMsys2} }
+        @{ Name = "msys2_tools_installed";   Desc = "Install system tools (pacman)";    Func = ${function:Step-InstallMsys2Tools} }
+        @{ Name = "tessdata_downloaded";     Desc = "Download language models";         Func = ${function:Step-DownloadTessdata} }
+        @{ Name = "scripts_generated";       Desc = "Generate Python scripts";          Func = ${function:Step-GenerateScripts} }
+        @{ Name = "launcher_generated";      Desc = "Generate launcher";                Func = ${function:Step-GenerateLauncher} }
+        @{ Name = "verified";                Desc = "Verify installation";              Func = ${function:Step-Verify} }
     )
 
     $totalSteps = $steps.Count
@@ -1012,7 +1051,6 @@ function Invoke-Install {
         Write-Log "Info" "[$currentStep/$totalSteps] COMPLETE: $($step.Desc)" -NoConsole
     }
 
-    # Final summary (step 10)
     Step-Complete
 }
 
@@ -1024,12 +1062,10 @@ function Invoke-Uninstall {
     Write-Host "=== mark-dawn uninstall ===" -ForegroundColor Cyan
     Write-Host ""
 
-    # Resolve paths
     if (-not $Script:_installDir) { $Script:_installDir = $Script:DEFAULT_INSTALL_DIR }
     if (-not $Script:_dataDir)    { $Script:_dataDir = $Script:DEFAULT_DATA_DIR }
     $Script:_launcherPath = Join-PathSafe $Script:_installDir "mark-dawn.bat"
 
-    # Run launcher stop if available
     $launcher = $Script:_launcherPath
     if (Test-Path $launcher -PathType Leaf) {
         Write-Log "Info" "Stopping watcher via launcher..." -NoConsole
@@ -1040,7 +1076,6 @@ function Invoke-Uninstall {
         }
     }
 
-    # Ask for confirmation
     Write-Host "This will remove:" -ForegroundColor Yellow
     Write-Host "  - $($Script:_installDir) (mark-dawn installation)" -ForegroundColor Yellow
     Write-Host "" -ForegroundColor Yellow
@@ -1053,14 +1088,12 @@ function Invoke-Uninstall {
         return
     }
 
-    # Remove Task Scheduler entry (requires admin)
     try {
         $proc = Start-Process -FilePath "schtasks" -ArgumentList "/Delete", "/TN", "mark-dawn", "/F" -Wait -PassThru -NoNewWindow
     } catch {
         Write-Log "Info" "Task Scheduler entry may remain (not admin)" -NoConsole
     }
 
-    # Remove installation directory
     try {
         Remove-DirectorySafe $Script:_installDir -Force
         Write-OK "Installation directory removed: $($Script:_installDir)"
@@ -1068,7 +1101,6 @@ function Invoke-Uninstall {
         Write-Log "Warn" "Could not remove installation directory: $_" -NoConsole
     }
 
-    # Clear state
     Clear-InstallState
 
     Write-Host ""
@@ -1087,7 +1119,7 @@ function Get-LauncherScript {
 setlocal enabledelayedexpansion
 
 REM ============================================================================
-REM mark-dawn launcher for Windows
+REM mark-dawn launcher for Windows (Option B)
 REM Commands match Linux version: start, stop, restart, convert, logs, status,
 REM                                update, install-task, uninstall-task, help
 REM Generated by mark-dawn.ps1 installer v$($Script:_installVersion)
@@ -1095,22 +1127,23 @@ REM ============================================================================
 
 set "INSTALL_DIR=%~dp0"
 set "INSTALL_DIR=%INSTALL_DIR:~0,-1%"
-set "MSYS2_DIR=%INSTALL_DIR%\msys2"
+set "PYTHON_DIR=%INSTALL_DIR%\python"
+set "MSYS2_DIR=%INSTALL_DIR%\.msys2"
 set "DATA_DIR=$($Script:_dataDir)"
 set "SCRIPTS_DIR=%INSTALL_DIR%\scripts"
 set "LOGS_DIR=%INSTALL_DIR%\logs"
 set "PID_FILE=%INSTALL_DIR%\mark-dawn.pid"
 set "PID_TMP=%PID_FILE%.tmp"
 set "LOG_FILE=%LOGS_DIR%\mark-dawn.log"
-set "PYTHON=%MSYS2_DIR%\mingw64\bin\python.exe"
+set "PYTHON=%PYTHON_DIR%\python.exe"
 
 REM Set environment variables consumed by Python scripts
 set "MARK_DAWN_DATA=%DATA_DIR%"
 set "MARK_DAWN_SCRIPTS=%SCRIPTS_DIR%"
 set "MARK_DAWN_LOG=%LOG_FILE%"
 set "MARK_DAWN_PID=%PID_FILE%"
-set "TESSDATA_PREFIX=%MSYS2_DIR%\mingw64\share\tessdata"
-set "PATH=%MSYS2_DIR%\mingw64\bin;%MSYS2_DIR%\usr\bin;%PATH%"
+set "TESSDATA_PREFIX=%INSTALL_DIR%\tessdata"
+set "PATH=%MSYS2_DIR%\mingw64\bin;%PYTHON_DIR%;%PYTHON_DIR%\Scripts;%PATH%"
 set "PYTHONIOENCODING=utf-8"
 
 REM Ensure directories exist
@@ -1137,7 +1170,6 @@ goto help
 :start
     echo Starting mark-dawn watcher...
 
-    REM Check if already running
     if exist "%PID_FILE%" (
         set /p OLD_PID=<"%PID_FILE%"
         tasklist /FI "PID eq !OLD_PID!" 2>nul | findstr /C:"!OLD_PID!" >nul 2>&1
@@ -1151,23 +1183,19 @@ goto help
         )
     )
 
-    REM Check python is available
     if not exist "%PYTHON%" (
         echo FAIL: Python not found at %PYTHON%
         exit /b 1
     )
 
-    REM Check watcher script exists
     if not exist "%SCRIPTS_DIR%\watcher.py" (
         echo FAIL: watcher.py not found at %SCRIPTS_DIR%\watcher.py
         echo Re-run the installer to fix this.
         exit /b 1
     )
 
-    REM Launch watcher in background
     start "" /B "%PYTHON%" "%SCRIPTS_DIR%\watcher.py" >> "%LOG_FILE%" 2>&1
 
-    REM Wait for PID file (up to 5 seconds)
     set WAIT_COUNT=0
     :wait_pid
     if exist "%PID_FILE%" goto pid_ok
@@ -1195,7 +1223,6 @@ goto help
     set /p PID=<"%PID_FILE%"
     echo Stopping mark-dawn (PID %PID%)...
 
-    REM Verify process exists before killing
     tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul 2>&1
     if errorlevel 1 (
         echo Process not found (stale PID file), cleaning up...
@@ -1203,13 +1230,9 @@ goto help
         goto end
     )
 
-    REM Kill process tree
     taskkill /PID %PID% /T /F >nul 2>&1
-
-    REM Wait for process to exit
     timeout /t 2 /nobreak >nul
 
-    REM Remove PID file atomically
     if exist "%PID_FILE%" del "%PID_FILE%" >nul 2>&1
 
     echo OK: mark-dawn stopped
@@ -1274,24 +1297,14 @@ goto help
     echo Updating mark-dawn components...
     echo.
 
-    REM Update MSYS2 packages
-    echo [1/3] Updating MSYS2 packages...
-    if exist "%MSYS2_DIR%\usr\bin\bash.exe" (
-        "%MSYS2_DIR%\usr\bin\bash.exe" -lc "pacman -Syu --noconfirm --disable-download-timeout" 2>&1
-    ) else (
-        echo WARNING: MSYS2 bash not found. Skipping package update.
-    )
-
-    REM Update Python packages
-    echo [2/3] Updating Python packages...
+    echo [1/3] Updating Python packages via pip...
     if exist "%PYTHON%" (
-        "%PYTHON%" -m pip install --upgrade --no-build-isolation --no-cache-dir pymupdf4llm markitdown python-docx openpyxl python-pptx watchdog
+        "%PYTHON%" -m pip install --upgrade --no-cache-dir pymupdf4llm markitdown python-docx openpyxl python-pptx watchdog
     ) else (
         echo WARNING: Python not found. Skipping pip update.
     )
 
-    REM Restart watcher
-    echo [3/3] Restarting watcher...
+    echo [2/3] Restarting watcher...
     call :stop
     timeout /t 2 /nobreak >nul
     call :start
@@ -1301,7 +1314,6 @@ goto help
     goto end
 
 :install_task
-    REM Check admin rights
     net session >nul 2>&1
     if errorlevel 1 (
         echo install-task requires Administrator rights.
@@ -1315,14 +1327,12 @@ goto help
         exit /b !ERRORLEVEL!
     )
 
-    REM Is admin — create task
     schtasks /Create /TN "mark-dawn" /TR "\"%INSTALL_DIR%\mark-dawn.bat\" start" /SC ONLOGON /RL HIGHEST /F
     if errorlevel 1 (
         echo FAIL: Failed to create Task Scheduler entry.
         exit /b 1
     )
 
-    REM Start the task now
     schtasks /Run /TN "mark-dawn" >nul 2>&1
 
     echo OK: Task Scheduler entry created and started on next login
@@ -1363,7 +1373,7 @@ goto help
     echo   convert FILE       Convert single file
     echo   logs               Follow logs (last 50 lines + live tail)
     echo   status             Show watcher status and PID
-    echo   update             Update MSYS2 packages and Python dependencies
+    echo   update             Update Python dependencies
     echo   install-task       Install auto-start on login (requires Admin)
     echo   uninstall-task     Remove auto-start entry (requires Admin)
     echo   help               Show this help message
@@ -1388,7 +1398,7 @@ function Get-WatcherScript {
     return @'
 #!/usr/bin/env python3
 """mark-dawn watcher: monitors Inbox folder and converts new files to Markdown."""
-import os, sys, time, subprocess, json
+import os, sys, time, subprocess
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -1417,12 +1427,11 @@ def log(msg):
         pass
 
 def file_is_ready(filepath, min_size=1024, max_age=2.0):
-    """Check if file is fully written (stable size, no longer growing)."""
     try:
         if not filepath.exists():
             return False
         if filepath.stat().st_size < min_size:
-            return True  # Small files are likely ready
+            return True
         s1 = filepath.stat().st_size
         time.sleep(0.5)
         s2 = filepath.stat().st_size
@@ -1453,7 +1462,6 @@ class InboxHandler(FileSystemEventHandler):
             self._touch(e.src_path)
 
 def process_file(file_path):
-    """Process a single file. Returns True on success."""
     ext = file_path.suffix.lower()
     out_file = RESEARCH / f"{file_path.stem}.md"
 
@@ -1475,7 +1483,6 @@ def process_file(file_path):
                 capture_output=True, text=True, timeout=120, env=env
             )
             if result.returncode == 0 and result.stdout:
-                # Atomic write: temp + rename
                 tmp = out_file.with_suffix(".md.tmp")
                 tmp.write_text(result.stdout, encoding="utf-8")
                 tmp.rename(out_file)
@@ -1487,7 +1494,6 @@ def process_file(file_path):
     except Exception as e:
         log(f"Error processing {file_path.name}: {e}")
 
-    # Move to Failed on any error
     try:
         dest = FAILED / file_path.name
         file_path.rename(dest)
@@ -1502,7 +1508,6 @@ def main():
     FAILED.mkdir(parents=True, exist_ok=True)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    # Write PID atomically
     try:
         pid_tmp = PID_FILE.with_suffix(".pid.tmp")
         pid_tmp.write_text(str(os.getpid()))
@@ -1510,7 +1515,6 @@ def main():
     except Exception as e:
         log(f"WARNING: Could not write PID file: {e}")
 
-    # Remove any stale stop marker
     STOP_FILE.unlink(missing_ok=True)
 
     handler = InboxHandler()
@@ -1525,7 +1529,6 @@ def main():
 
     try:
         while True:
-            # Check for stop marker (graceful shutdown signal)
             if STOP_FILE.exists():
                 log("Stop marker detected, shutting down...")
                 break
@@ -1533,7 +1536,6 @@ def main():
             time.sleep(1.0)
             now = time.time()
 
-            # Process files that have settled past debounce
             ready = [
                 p for p, t in list(handler.pending.items())
                 if now - t >= DEBOUNCE and p.exists() and file_is_ready(p)
@@ -1545,7 +1547,6 @@ def main():
                 log(f"Processing: {p.name}")
                 process_file(p)
 
-            # Clean up stale pending entries (older than 5 minutes)
             stale = [p for p, t in list(handler.pending.items()) if now - t > 300]
             for p in stale:
                 handler.pending.pop(p, None)
@@ -1556,7 +1557,6 @@ def main():
         observer.join()
         log("Watcher stopped")
 
-    # Clean up PID file
     try:
         PID_FILE.unlink(missing_ok=True)
     except Exception:
@@ -1583,11 +1583,9 @@ RESEARCH.mkdir(parents=True, exist_ok=True)
 file_path = Path(sys.argv[1])
 out_file  = RESEARCH / f"{file_path.stem}.md"
 
-# Prevent duplicate runs on same file
 lock_file = RESEARCH / f".{file_path.stem}.lock"
 
 try:
-    # Acquire lock
     if lock_file.exists():
         print(f"Lock file exists for {file_path.name}, another process may be working on it")
         sys.exit(0)
@@ -1606,7 +1604,6 @@ try:
     avg_chars = text_len / num_pages if num_pages > 0 else 0
 
     if avg_chars > 100:
-        # Digital PDF - fast path
         print(f"Digital PDF ({int(avg_chars)} chars/page). Converting via pymupdf4llm...")
         md_text = pymupdf4llm.to_markdown(str(file_path))
         tmp_out = out_file.with_suffix(".md.tmp")
@@ -1615,13 +1612,11 @@ try:
         print(f"OK: {out_file.name}")
         sys.exit(0)
     else:
-        # Scanned PDF - OCR path
         print(f"Scanned PDF ({int(avg_chars)} chars/page). Running ocrmypdf...")
         with tempfile.TemporaryDirectory() as tmp_dir:
             ocr_input = Path(tmp_dir) / file_path.name
             ocr_output = Path(tmp_dir) / f"ocr_{file_path.name}"
 
-            # Copy to temp to avoid permission issues
             shutil.copy2(str(file_path), str(ocr_input))
 
             env = os.environ.copy()
@@ -1643,7 +1638,6 @@ try:
             )
             if result.returncode != 0:
                 print(f"ocrmypdf failed (exit {result.returncode}):", file=sys.stderr)
-                # Show last 1KB of stderr
                 if result.stderr:
                     print(result.stderr[-1024:], file=sys.stderr)
                 sys.exit(1)
@@ -1666,7 +1660,6 @@ except Exception as e:
     print(f"Fatal error: {e}", file=sys.stderr)
     sys.exit(1)
 finally:
-    # Release lock
     try:
         lock_file.unlink(missing_ok=True)
     except Exception:
@@ -1678,7 +1671,7 @@ finally:
 # COMMAND DISPATCH
 # ============================================================================
 function Show-Help {
-    Write-Host "mark-dawn portable installer for Windows" -ForegroundColor Cyan
+    Write-Host "mark-dawn portable installer for Windows (Option B)" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Usage: mark-dawn.ps1 [options]" -ForegroundColor White
     Write-Host ""
@@ -1706,7 +1699,6 @@ function Show-Help {
 # MAIN ENTRY POINT
 # ============================================================================
 function Main {
-    # Set log level
     $Script:_logLevelNum = @{ "Debug" = 0; "Info" = 1; "Warn" = 2; "Error" = 3 }[$LogLevel]
 
     if ($Help) { Show-Help }
@@ -1718,12 +1710,10 @@ function Main {
         return
     }
 
-    # Set global paths
     $Script:_installDir = if ($InstallDir) { $InstallDir } else { $Script:DEFAULT_INSTALL_DIR }
     $Script:_dataDir    = if ($DataDir)    { $DataDir }    else { $Script:DEFAULT_DATA_DIR }
 
     Invoke-Install
 }
 
-# Run
 Main
