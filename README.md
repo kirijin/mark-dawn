@@ -2,7 +2,7 @@
   <img src="https://raw.githubusercontent.com/kirijin/mark-dawn/main/logo.png" width="200">
 </p>
 
-# !BEWARE! SLOPPING IN PROGRESS. SUBJECT TO CONSTANT CHANGE TIL "AT LEAST WORKS"!
+# ⚠️BEWARE⚠️ SLOPPING IN PROGRESS. SUBJECT TO CONSTANT CHANGE TIL "AT LEAST WORKS"!
 
 ## **mark-dawn**
 ***a vibe-slopped portable ocr solution for nix & win***
@@ -92,7 +92,7 @@ mark-dawn -h
 ```
 
 
-**How It Works**
+⚙️ **How It Works**
 
 - You drop a file into ~/Documents/Inbox/
 - Watcher detects it (3s debounce)
@@ -103,14 +103,14 @@ mark-dawn -h
 - Failed files moved to ~/Documents/Inbox_Failed/
 
 
-**Directory Layout**
+📂 **Directory Layout**
 ```
 ~/Documents/
 ├── Inbox/         ← Drop files here
 ├── Research/      ← Converted Markdown appears here
 └── Inbox_Failed/  ← Files that couldn't be converted
 ```
-**Building Locally**
+🏗️ **Building Locally**
 ```
 git clone https://github.com/kirijin/mark-dawn.git
 cd mark-dawn
