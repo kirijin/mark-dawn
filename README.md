@@ -2,7 +2,7 @@
   <img src="https://raw.githubusercontent.com/kirijin/mark-dawn/main/logo.png" width="200">
 </p>
 
-# ⚠️ SLOPPING IN PROGRESS. SUBJECT TO CONSTANT CHANGE TIL "AT LEAST WORKS"!
+# ⚠️ SLOP IN PROGRESS. SUBJECT TO CONSTANT CHANGE TIL "AT LEAST WORKS"!
 
 ## **mark-dawn**
 ***a vibe-slopped portable ocr solution for nix & win***
@@ -22,7 +22,7 @@ Converts PDF, DOCX, XLSX, PPTX, HTML, CSV, RTF to clean Markdown with:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.sh | bash
 ```
-❌ **Windows (PowerShell) *(BROKEN. SLOP in PROGRESS)* (MSYS2 Portable)**
+❌ **Windows (PowerShell) (MSYS2 Portable)**
 ```powershell
 iwr -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.ps1" -OutFile "$env:TEMP\install.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"
 ```
