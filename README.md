@@ -2,7 +2,7 @@
   <img src="https://raw.githubusercontent.com/kirijin/mark-dawn/main/logo.png" width="200">
 </p>
 
-# !BEWARE! SLOPPING IN PROGRESS. SUBJECT TO CONSTANT CHANGE UNTIL "AT LEAST WORKS"!
+# !BEWARE! SLOPPING IN PROGRESS. SUBJECT TO CONSTANT CHANGE TIL "AT LEAST WORKS"!
 
 ## **mark-dawn**
 ***a vibe-slopped portable ocr solution for nix & win***
@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.sh |
 ```powershell
 iwr -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.ps1" -OutFile "$env:TEMP\install.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"
 ```
-❌ **??MacOS??** ***in the slops rn***
+❌ **??macOS??** ***in the slops rn***
 ```sh
 ```
 
@@ -118,7 +118,7 @@ podman build -t mark-dawn:latest .
 MARK_DAWN_IMAGE=localhost/mark-dawn:latest ./mark-dawn.sh start
 ```
 
-👏 ### Deepest kudos to
+### Deepest kudos to 👏 
 - [pymupdf4llm](https://pypi.org/project/pymupdf4llm/)
 - [markitdown](https://pypi.org/project/markitdown/)
 - [ocrmypdf](https://hub.docker.com/r/jbarlow83/ocrmypdf)
