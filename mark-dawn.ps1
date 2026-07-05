@@ -51,6 +51,8 @@ $Script:PACMAN_PACKAGES = @(
     "mingw-w64-x86_64-python"
     "mingw-w64-x86_64-python-pip"
     "mingw-w64-x86_64-python-pymupdf"
+    "mingw-w64-x86_64-cmake"
+    "mingw-w64-x86_64-ninja"
 )
 
 # Python packages to install via pip (inside MSYS2 venv)
@@ -689,7 +691,7 @@ function Step-InstallPackages {
 }
 
 function Step-InstallPythonPackages {
-    Write-Step "5/9" "Installing Python packages in virtual environment..."
+    Write-Step "5/9" "Installing Python packages (pymupdf4llm, markitdown, watchdog)..."
 
     $pythonExe = Join-PathSafe $Script:_msys2Dir "mingw64\bin\python.exe"
     $pipExe    = Join-PathSafe $Script:_msys2Dir "mingw64\bin\pip.exe"
@@ -697,38 +699,24 @@ function Step-InstallPythonPackages {
     if (-not (Test-Path $pythonExe -PathType Leaf)) {
         Write-Fail "Python not found: $pythonExe"
     }
+    if (-not (Test-Path $pipExe -PathType Leaf)) {
+        Write-Fail "pip not found: $pipExe"
+    }
 
     try {
-        # Remove existing venv if force reinstall
-        if ($Script:ForceRedownload -and (Test-Path $Script:_venvDir -PathType Container)) {
-            Remove-DirectorySafe $Script:_venvDir -Force
-        }
+        # Install packages directly into MSYS2's Python (portable, no system pollution)
+        # --no-build-isolation: use MSYS2's pre-built packages (pymupdf, pikepdf, etc.)
+        #   instead of rebuilding from source
+        # --no-cache-dir: avoid disk space issues
+        # No --upgrade: don't touch pre-installed MSYS2 system packages
+        Write-Info "Installing via pip (this takes 2-5 minutes)..."
+        $pipArgs = @(
+            "-m", "pip", "install"
+            "--no-cache-dir"
+            "--no-build-isolation"
+        ) + $Script:PIP_PACKAGES
 
-        # Create venv if not exists
-        if (-not (Test-Path $Script:_venvDir -PathType Container)) {
-            Write-Info "Creating Python virtual environment..."
-            $env:MSYSTEM = "MINGW64"
-            $proc = Start-Process -FilePath $pythonExe -ArgumentList "-m", "venv", $Script:_venvDir -Wait -PassThru -NoNewWindow
-            if ($proc.ExitCode -ne 0) {
-                throw "Failed to create virtual environment (exit $($proc.ExitCode))"
-            }
-
-            # Check venv python
-            $venvPython = Join-PathSafe $Script:_venvDir "Scripts\python.exe"
-            if (-not (Test-Path $venvPython -PathType Leaf)) {
-                throw "Virtual environment python not created"
-            }
-        }
-
-        # Install/upgrade pip in venv
-        $venvPython = Join-PathSafe $Script:_venvDir "Scripts\python.exe"
-        Write-Info "Upgrading pip in virtual environment..."
-        $proc = Start-Process -FilePath $venvPython -ArgumentList "-m", "pip", "install", "--upgrade", "pip" -Wait -PassThru -NoNewWindow
-
-        # Install packages
-        Write-Info "Installing Python packages..."
-        $pipArgs = @("-m", "pip", "install", "--upgrade") + $Script:PIP_PACKAGES
-        $proc = Start-Process -FilePath $venvPython -ArgumentList $pipArgs -Wait -PassThru -NoNewWindow
+        $proc = Start-Process -FilePath $pythonExe -ArgumentList $pipArgs -Wait -PassThru -NoNewWindow
         if ($proc.ExitCode -ne 0) {
             throw "Pip install failed (exit $($proc.ExitCode))"
         }
@@ -741,7 +729,7 @@ function Step-InstallPythonPackages {
             "import watchdog; print('watchdog:', watchdog.__version__)"
         )
         foreach ($importCmd in $imports) {
-            $proc = Start-Process -FilePath $venvPython -ArgumentList "-c", $importCmd -Wait -PassThru -NoNewWindow
+            $proc = Start-Process -FilePath $pythonExe -ArgumentList "-c", $importCmd -Wait -PassThru -NoNewWindow
             if ($proc.ExitCode -ne 0) {
                 throw "Import verification failed for: $importCmd"
             }
@@ -834,12 +822,12 @@ function Step-GenerateScripts {
         $convertContent | Out-File -FilePath $convertPath -Encoding utf8 -Force -ErrorAction Stop
 
         # Verify scripts are valid Python
-        $venvPython = Join-PathSafe $Script:_venvDir "Scripts\python.exe"
-        if (Test-Path $venvPython) {
-            $proc = Start-Process -FilePath $venvPython -ArgumentList "-m", "py_compile", $watcherPath -Wait -PassThru -NoNewWindow
+        $pythonPath = Join-PathSafe $Script:_msys2Dir "mingw64\bin\python.exe"
+        if (Test-Path $pythonPath) {
+            $proc = Start-Process -FilePath $pythonPath -ArgumentList "-m", "py_compile", $watcherPath -Wait -PassThru -NoNewWindow
             if ($proc.ExitCode -ne 0) { Write-Log "Warn" "watcher.py syntax check failed" -NoConsole }
 
-            $proc = Start-Process -FilePath $venvPython -ArgumentList "-m", "py_compile", $convertPath -Wait -PassThru -NoNewWindow
+            $proc = Start-Process -FilePath $pythonPath -ArgumentList "-m", "py_compile", $convertPath -Wait -PassThru -NoNewWindow
             if ($proc.ExitCode -ne 0) { Write-Log "Warn" "convert_pdf.py syntax check failed" -NoConsole }
         }
 
@@ -898,17 +886,17 @@ function Step-Verify {
     }
 
     # Verify Python packages via import check
-    $venvPython = Join-PathSafe $Script:_venvDir "Scripts\python.exe"
-    if (Test-Path $venvPython -PathType Leaf) {
+    $pythonPath = Join-PathSafe $Script:_msys2Dir "mingw64\bin\python.exe"
+    if (Test-Path $pythonPath -PathType Leaf) {
         $imports = @("pymupdf4llm", "markitdown", "watchdog")
         foreach ($mod in $imports) {
-            $proc = Start-Process -FilePath $venvPython -ArgumentList "-c", "import $mod" -Wait -PassThru -NoNewWindow
+            $proc = Start-Process -FilePath $pythonPath -ArgumentList "-c", "import $mod" -Wait -PassThru -NoNewWindow
             if ($proc.ExitCode -ne 0) {
                 $failures += "Python module import failed: $mod"
             }
         }
     } else {
-        $failures += "Python virtual environment not found"
+        $failures += "MSYS2 Python not found at: $pythonPath"
     }
 
     # Check data directories
@@ -1096,7 +1084,7 @@ set "LOGS_DIR=%INSTALL_DIR%\logs"
 set "PID_FILE=%INSTALL_DIR%\mark-dawn.pid"
 set "PID_TMP=%PID_FILE%.tmp"
 set "LOG_FILE=%LOGS_DIR%\mark-dawn.log"
-set "VENV_PYTHON=%INSTALL_DIR%\venv\Scripts\python.exe"
+set "PYTHON=%MSYS2_DIR%\mingw64\bin\python.exe"
 
 REM Set environment variables consumed by Python scripts
 set "MARK_DAWN_DATA=%DATA_DIR%"
@@ -1106,11 +1094,6 @@ set "MARK_DAWN_PID=%PID_FILE%"
 set "TESSDATA_PREFIX=%MSYS2_DIR%\mingw64\share\tessdata"
 set "PATH=%MSYS2_DIR%\mingw64\bin;%MSYS2_DIR%\usr\bin;%PATH%"
 set "PYTHONIOENCODING=utf-8"
-
-REM Fallback: if venv python missing, try MSYS2 python
-if not exist "%VENV_PYTHON%" (
-    set "VENV_PYTHON=%MSYS2_DIR%\mingw64\bin\python.exe"
-)
 
 REM Ensure directories exist
 if not exist "%DATA_DIR%\Inbox" mkdir "%DATA_DIR%\Inbox"
@@ -1151,8 +1134,8 @@ goto help
     )
 
     REM Check python is available
-    if not exist "%VENV_PYTHON%" (
-        echo FAIL: Python not found at %VENV_PYTHON%
+    if not exist "%PYTHON%" (
+        echo FAIL: Python not found at %PYTHON%
         exit /b 1
     )
 
@@ -1164,7 +1147,7 @@ goto help
     )
 
     REM Launch watcher in background
-    start "" /B "%VENV_PYTHON%" "%SCRIPTS_DIR%\watcher.py" >> "%LOG_FILE%" 2>&1
+    start "" /B "%PYTHON%" "%SCRIPTS_DIR%\watcher.py" >> "%LOG_FILE%" 2>&1
 
     REM Wait for PID file (up to 5 seconds)
     set WAIT_COUNT=0
@@ -1229,11 +1212,11 @@ goto help
         echo File not found: %2
         exit /b 1
     )
-    if not exist "%VENV_PYTHON%" (
-        echo FAIL: Python not found at %VENV_PYTHON%
+    if not exist "%PYTHON%" (
+        echo FAIL: Python not found at %PYTHON%
         exit /b 1
     )
-    "%VENV_PYTHON%" "%SCRIPTS_DIR%\convert_pdf.py" "%~f2"
+    "%PYTHON%" "%SCRIPTS_DIR%\convert_pdf.py" "%~f2"
     set EXIT_CODE=!ERRORLEVEL!
     if !EXIT_CODE! equ 0 (
         echo OK: Conversion complete
@@ -1283,8 +1266,8 @@ goto help
 
     REM Update Python packages
     echo [2/3] Updating Python packages...
-    if exist "%VENV_PYTHON%" (
-        "%VENV_PYTHON%" -m pip install --upgrade pymupdf4llm markitdown[all] watchdog
+    if exist "%PYTHON%" (
+        "%PYTHON%" -m pip install --upgrade --no-build-isolation pymupdf4llm markitdown[all] watchdog
     ) else (
         echo WARNING: Python not found. Skipping pip update.
     )
