@@ -117,3 +117,8 @@ cd mark-dawn
 podman build -t mark-dawn:latest .
 MARK_DAWN_IMAGE=localhost/mark-dawn:latest ./mark-dawn.sh start
 ```
+
+### Deepest kudos to
+- [pymupdf4llm](https://pypi.org/project/pymupdf4llm/)
+- [markitdown](https://pypi.org/project/markitdown/)
+- [ocrmypdf](https://hub.docker.com/r/jbarlow83/ocrmypdf)
