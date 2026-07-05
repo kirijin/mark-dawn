@@ -51,14 +51,21 @@ $Script:PACMAN_PACKAGES = @(
     "mingw-w64-x86_64-python"
     "mingw-w64-x86_64-python-pip"
     "mingw-w64-x86_64-python-pymupdf"
+    "mingw-w64-x86_64-python-pikepdf"
     "mingw-w64-x86_64-cmake"
     "mingw-w64-x86_64-ninja"
 )
 
-# Python packages to install via pip (inside MSYS2 venv)
+# Python packages to install via pip (directly into MSYS2 Python)
+# Note: markitdown[all] requires pikepdf which needs cmake+ninja to build.
+# Instead, we install pure-Python format support separately.
+# PDFs go through convert_pdf.py (pymupdf4llm), not markitdown.
 $Script:PIP_PACKAGES = @(
     "pymupdf4llm"
-    "markitdown[all]"
+    "markitdown"
+    "python-docx"
+    "openpyxl"
+    "python-pptx"
     "watchdog"
 )
 
@@ -704,9 +711,13 @@ function Step-InstallPythonPackages {
     }
 
     try {
+        # Set PATH so pip can find MSYS2's cmake, ninja, gcc, etc.
+        $msys2Bin  = Join-PathSafe $Script:_msys2Dir "mingw64\bin"
+        $msys2Usr  = Join-PathSafe $Script:_msys2Dir "usr\bin"
+        $env:PATH  = "$msys2Bin;$msys2Usr;$env:PATH"
+
         # Install packages directly into MSYS2's Python (portable, no system pollution)
-        # --no-build-isolation: use MSYS2's pre-built packages (pymupdf, pikepdf, etc.)
-        #   instead of rebuilding from source
+        # --no-build-isolation: use MSYS2's pre-built packages instead of rebuilding
         # --no-cache-dir: avoid disk space issues
         # No --upgrade: don't touch pre-installed MSYS2 system packages
         Write-Info "Installing via pip (this takes 2-5 minutes)..."
@@ -1267,7 +1278,7 @@ goto help
     REM Update Python packages
     echo [2/3] Updating Python packages...
     if exist "%PYTHON%" (
-        "%PYTHON%" -m pip install --upgrade --no-build-isolation pymupdf4llm markitdown[all] watchdog
+        "%PYTHON%" -m pip install --upgrade --no-build-isolation --no-cache-dir pymupdf4llm markitdown python-docx openpyxl python-pptx watchdog
     ) else (
         echo WARNING: Python not found. Skipping pip update.
     )
