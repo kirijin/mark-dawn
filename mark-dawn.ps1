@@ -2,7 +2,7 @@
 .SYNOPSIS
     mark-dawn portable installer for Windows (Option B)
 .DESCRIPTION
-    Installs mark-dawn — a universal document-to-Markdown pipeline — as a fully
+    Installs mark-dawn - a universal document-to-Markdown pipeline - as a fully
     portable application on Windows 10/11 x64.  No WSL, no containers, no
     administrator rights required (except for Task Scheduler auto-start).
 
@@ -22,20 +22,47 @@
     Requires : Windows 10/11 x64, PowerShell 5.1+
 #>
 
+param(
+    [string]$InstallDir = "",
+    [string]$DataDir = "",
+    [string]$Msys2Mirror = "",
+    [string]$PypiMirror = "",
+    [switch]$SkipInit,
+    [switch]$ForceRedownload,
+    [switch]$SkipVerification,
+    [int]$MaxRetries = 3,
+    [int]$TimeoutSec = 300,
+    [ValidateSet("Debug", "Info", "Warn", "Error")]
+    [string]$LogLevel = "Info",
+    [switch]$Help,
+    [switch]$Uninstall
+)
+
 # ============================================================================
-# CONFIGURATION — pinned artifacts with SHA256 verification
+# CONFIGURATION - pinned artifacts with SHA256 verification
 # ============================================================================
 
 # Python.org embedded distribution (no installer needed, just unzip)
 $Script:PYTHON_VERSION = "3.12.4"
 $Script:PYTHON_URL     = "https://www.python.org/ftp/python/$($Script:PYTHON_VERSION)/python-$($Script:PYTHON_VERSION)-embed-amd64.zip"
 $Script:PYTHON_SHA256  = "15fea3c9367653a85086fe37216b4d1a1c78688fa5e1587e1db0b0f658856564"
+$Script:PYTHON_FALLBACK_URLS = @(
+    "https://www.python.org/ftp/python/$($Script:PYTHON_VERSION)/python-$($Script:PYTHON_VERSION)-embed-amd64.zip"
+    "https://mirrors.tuna.tsinghua.edu.cn/python/$($Script:PYTHON_VERSION)/python-$($Script:PYTHON_VERSION)-embed-amd64.zip"
+    "https://repo.huaweicloud.com/python/$($Script:PYTHON_VERSION)/python-$($Script:PYTHON_VERSION)-embed-amd64.zip"
+)
 
 # get-pip.py for bootstrapping pip into embedded Python
 $Script:GETPIP_URL     = "https://bootstrap.pypa.io/get-pip.py"
 $Script:GETPIP_SHA256  = "a341e1a43e38001c551a1508a73ff23636a11970b61d901d9a1cad2a18f57055"
+$Script:GETPIP_FALLBACK_URLS = @(
+    "https://bootstrap.pypa.io/get-pip.py"
+    "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/get-pip.py"
+    "https://mirrors.ustc.edu.cn/pypi/web/get-pip.py"
+    "https://mirrors.aliyun.com/pypi/get-pip.py"
+)
 
-# MSYS2 — base system SFX for tool extraction only
+# MSYS2 - base system SFX for tool extraction only
 $Script:MSYS2_VERSION  = "2026-06-11"
 $Script:MSYS2_URL      = "https://github.com/msys2/msys2-installer/releases/download/$($Script:MSYS2_VERSION)/msys2-base-x86_64-$($Script:MSYS2_VERSION.Replace('-','')).sfx.exe"
 $Script:MSYS2_SHA256   = "c105946e64e08f099ac0e4647461ce762b95333ad211777666476a9a41451d65"
@@ -47,8 +74,20 @@ $Script:MSYS2_TOOL_PACKAGES = @(
     "mingw-w64-x86_64-qpdf"
 )
 
+# MSYS2 mirrors -- probed in order during Select-FastestMirror
+$Script:MSYS2_MIRRORS = @(
+    @{ Name = "Official";  Base = "https://mirror.msys2.org" }
+    @{ Name = "Yandex";    Base = "https://mirror.yandex.ru/msys2" }
+    @{ Name = "USTC";      Base = "https://mirrors.ustc.edu.cn/msys2" }
+    @{ Name = "Tsinghua";  Base = "https://mirrors.tuna.tsinghua.edu.cn/msys2" }
+    @{ Name = "Aliyun";    Base = "https://mirrors.aliyun.com/msys2" }
+    @{ Name = "Selfnet";   Base = "https://mirror.selfnet.de/msys2" }
+    @{ Name = "FAU";       Base = "https://ftp.fau.de/msys2" }
+)
+
 # Tesseract language models (6 languages)
-$Script:TESSDATA_BASE_URL = "https://github.com/tesseract-ocr/tessdata/raw/main"
+$Script:TESSDATA_BASE_URL  = "https://github.com/tesseract-ocr/tessdata/raw/main"
+$Script:TESSDATA_MIRROR_URL = "https://cdn.jsdelivr.net/gh/tesseract-ocr/tessdata@main"
 $Script:TESSDATA_LANGS    = @("eng", "rus", "fra", "deu", "chi_sim", "jpn")
 $Script:TESSDATA_SHA256   = @{
     "eng"     = "daa0c97d651c19fba3b25e81317cd697e9908c8208090c94c3905381c23fc047"
@@ -64,6 +103,7 @@ $Script:TESSDATA_MIN_SIZE = 1MB
 $Script:PIP_PACKAGES = @(
     "pymupdf4llm"
     "markitdown"
+    "ocrmypdf"
     "python-docx"
     "openpyxl"
     "python-pptx"
@@ -73,23 +113,6 @@ $Script:PIP_PACKAGES = @(
 # Default directories
 $Script:DEFAULT_INSTALL_DIR = [System.IO.Path]::Combine($env:USERPROFILE, "mark-dawn")
 $Script:DEFAULT_DATA_DIR    = [System.IO.Path]::Combine($env:USERPROFILE, "Documents")
-
-# ============================================================================
-# PARAMETERS
-# ============================================================================
-param(
-    [string]$InstallDir = "",
-    [string]$DataDir = "",
-    [switch]$SkipInit,
-    [switch]$ForceRedownload,
-    [switch]$SkipVerification,
-    [int]$MaxRetries = 3,
-    [int]$TimeoutSec = 300,
-    [ValidateSet("Debug", "Info", "Warn", "Error")]
-    [string]$LogLevel = "Info",
-    [switch]$Help,
-    [switch]$Uninstall,
-)
 
 # ============================================================================
 # INTERNAL STATE (set after parameter resolution)
@@ -107,9 +130,13 @@ $Script:_logFile        = ""
 $Script:_installLog     = ""
 $Script:_stateFile      = ""
 $Script:_pythonExe      = ""
-$Script:_installVersion = "2.0.0"
+$Script:_installVersion = "2.2.0"
 $Script:_logLevelNum    = 1  # 0=Debug 1=Info 2=Warn 3=Error
 $Script:msys2InstallerPath = ""
+$Script:_selectedMsys2Mirror = ""
+$Script:_msys2MirrorOverride = ""
+$Script:_failedMsys2Mirrors = @()
+$Script:_pypiMirror = ""
 
 # ============================================================================
 # LOGGING HELPERS
@@ -257,23 +284,32 @@ function Invoke-DownloadWithRetry {
     }
 
     $tempFile = "$OutFile.tmp"
+    # Clean up stale temp file from interrupted download
+    Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
     $attempt = 0
     $backoff = 2
+    $usedBits = $false
 
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-    while ($attempt -lt $MaxRetries) {
+    while ($attempt -lt ($MaxRetries + 1)) {
         $attempt++
         try {
             Write-Log "Info" "Downloading (attempt $attempt/$MaxRetries): $Url" -NoConsole
-            $params = @{
-                Uri             = $Url
-                OutFile         = $tempFile
-                UseBasicParsing = $true
-                ErrorAction     = "Stop"
-                TimeoutSec      = $TimeoutSec
+            Write-Info "Downloading $(Split-Path $Url -Leaf) (may take a few minutes)..."
+            if (-not $usedBits) {
+                $params = @{
+                    Uri             = $Url
+                    OutFile         = $tempFile
+                    UseBasicParsing = $true
+                    ErrorAction     = "Stop"
+                    TimeoutSec      = 900
+                    MaximumRedirection = 10
+                }
+                Invoke-WebRequest @params
+            } else {
+                Start-BitsTransfer -Source $Url -Destination $tempFile -ErrorAction Stop
             }
-            Invoke-WebRequest @params
 
             $fileInfo = Get-Item $tempFile -ErrorAction Stop
             if ($fileInfo.Length -eq 0) {
@@ -299,6 +335,12 @@ function Invoke-DownloadWithRetry {
             Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
             if ($attempt -ge $MaxRetries) {
                 throw "Download failed after $MaxRetries attempts: $_"
+            }
+            # On first failure, retry with BITS (more resilient for large files)
+            if (-not $usedBits -and $attempt -lt $MaxRetries) {
+                Write-Log "Info" "Retrying with BITS transfer..." -NoConsole
+                $usedBits = $true
+                continue
             }
             Write-Log "Info" "Retrying in ${backoff}s..." -NoConsole
             Start-Sleep -Seconds $backoff
@@ -454,18 +496,149 @@ function Invoke-Msys2Bash {
         throw "MSYS2 bash not found at: $bashPath"
     }
 
-    $envBackup = $env:MSYSTEM
+    $envBackup = @{}
+    $envBackup.MSYSTEM = $env:MSYSTEM
+    $envBackup.PATH = $env:PATH
     $env:MSYSTEM = "MINGW64"
+    # Ensure MSYS2 binaries are on PATH so loader can find cygwin DLLs
+    $env:PATH = "$(Join-PathSafe $Msys2Dir 'usr\bin');$(Join-PathSafe $Msys2Dir 'mingw64\bin');$env:PATH"
 
     try {
-        $proc = Start-Process -FilePath $bashPath -ArgumentList "-lc", $Command -Wait -PassThru -NoNewWindow
+        # Write command to temp script (handles multi-line + embedded quotes correctly)
+        $tempScript = [System.IO.Path]::GetTempFileName() + ".sh"
+        [System.IO.File]::WriteAllText($tempScript, $Command)
+        try {
+            $proc = Start-Process -FilePath $bashPath -ArgumentList @("-l", $tempScript) -Wait -PassThru -NoNewWindow
+        } finally {
+            Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
+        }
         if ($ExpectedExitCodes -and ($ExpectedExitCodes -notcontains $proc.ExitCode)) {
             throw "Command exited with code $($proc.ExitCode) (expected $ExpectedExitCodes): $Command"
         }
         if ($PassThru) { return $proc.ExitCode }
     } finally {
-        $env:MSYSTEM = $envBackup
+        $env:MSYSTEM = $envBackup.MSYSTEM
+        $env:PATH = $envBackup.PATH
     }
+}
+
+# ============================================================================
+# MSYS2 MIRROR HELPERS
+# ============================================================================
+function Set-Msys2Mirror {
+    param([string]$BaseUrl)
+    $arch = "x86_64"
+    $mingwList = Join-PathSafe $Script:_msys2Dir "etc\pacman.d\mirrorlist.mingw64"
+    $msysList  = Join-PathSafe $Script:_msys2Dir "etc\pacman.d\mirrorlist.msys"
+    try {
+        Ensure-Directory (Split-Path $mingwList -Parent)
+        @("Server = $BaseUrl/mingw/mingw64/") | Out-File $mingwList -Encoding ascii -Force
+        @("Server = $BaseUrl/msys/$arch/")    | Out-File $msysList  -Encoding ascii -Force
+        Write-Log "Debug" "Set MSYS2 mirror: $BaseUrl" -NoConsole
+        return $true
+    } catch {
+        Write-Log "Warn" "Failed to set mirror ${BaseUrl}: $_" -NoConsole
+        return $false
+    }
+}
+
+function Select-FastestMirror {
+    if ($Script:_selectedMsys2Mirror) {
+        Write-Log "Debug" "Using previously selected mirror: $($Script:_selectedMsys2Mirror)" -NoConsole
+        return Set-Msys2Mirror -BaseUrl $Script:_selectedMsys2Mirror
+    }
+
+    $mirrors = $Script:MSYS2_MIRRORS
+    if ($Script:_msys2MirrorOverride) {
+        Write-Info "Probing user-specified mirror: $($Script:_msys2MirrorOverride)..."
+        if (Set-Msys2Mirror -BaseUrl $Script:_msys2MirrorOverride) {
+            $Script:_selectedMsys2Mirror = $Script:_msys2MirrorOverride
+            return $true
+        }
+        Write-Log "Warn" "User mirror unreachable, falling back to auto-select" -NoConsole
+    }
+
+    # Remove previously failed mirrors from candidates
+    $candidates = $mirrors | Where-Object { $_.Base -notin $Script:_failedMsys2Mirrors }
+    if ($candidates.Count -eq 0) {
+        Write-Log "Warn" "All mirrors have failed, resetting blacklist and retrying all" -NoConsole
+        $Script:_failedMsys2Mirrors = @()
+        $candidates = $mirrors
+    }
+
+    Write-Info "Probing $($candidates.Count) MSYS2 mirrors for fastest response..."
+    $probeTimeout = [Math]::Min(5, $Script:TimeoutSec)
+    $probeScript = {
+        param($Name, $BaseUrl, $TimeoutSec)
+        $hostname = ($BaseUrl -replace 'https://', '').Split('/')[0]
+        $testPath = "$BaseUrl/msys/x86_64/msys.db"  # ~500KB test file
+        try {
+            # Step 1: TCP connect to filter unreachable mirrors
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $tcp = New-Object System.Net.Sockets.TcpClient
+            $conn = $tcp.BeginConnect($hostname, 443, $null, $null)
+            if (-not $conn.AsyncWaitHandle.WaitOne([TimeSpan]::FromSeconds($TimeoutSec), $false)) {
+                $tcp.Close()
+                return $null
+            }
+            $tcp.EndConnect($conn)
+            $tcp.Close()
+            $tcpMs = $sw.ElapsedMilliseconds
+
+            # Step 2: download speed test -- fetch the db file header
+            $req = [System.Net.HttpWebRequest]::Create($testPath)
+            $req.Method = "GET"
+            $req.Timeout = $TimeoutSec * 1000
+            $req.ReadWriteTimeout = $TimeoutSec * 1000
+            try {
+                $resp = $req.GetResponse()
+                $body = $resp.GetResponseStream()
+                $buf = New-Object byte[] 40960  # read first 40KB
+                $totalRead = 0
+                $readSw = [System.Diagnostics.Stopwatch]::StartNew()
+                while ($totalRead -lt $buf.Length -and $readSw.ElapsedMilliseconds -lt 3000) {
+                    $read = $body.Read($buf, $totalRead, $buf.Length - $totalRead)
+                    if ($read -le 0) { break }
+                    $totalRead += $read
+                }
+                $readSw.Stop()
+                $body.Close()
+                $resp.Close()
+                $speedKbps = if ($readSw.ElapsedMilliseconds -gt 0) {
+                    [Math]::Round($totalRead / 1024 / ($readSw.ElapsedMilliseconds / 1000))
+                } else { 0 }
+                return @{ Name = $Name; Base = $BaseUrl; TcpMs = $tcpMs; Speed = $speedKbps }
+            } catch {
+                # HTTP 404 or other HTTP error: mirror doesn't serve db at this path, still usable
+                return @{ Name = $Name; Base = $BaseUrl; TcpMs = $tcpMs; Speed = -1 }
+            }
+        } catch {
+            return $null
+        }
+    }
+
+    $jobs = $candidates | ForEach-Object {
+        Start-Job -ScriptBlock $probeScript -ArgumentList $_.Name, $_.Base, $probeTimeout
+    }
+    $results = $jobs | Wait-Job -Timeout $probeTimeout | Receive-Job
+    $jobs | Where-Object { $_.State -eq 'Running' } | Stop-Job -PassThru | Remove-Job -Force
+
+    # Sort: by speed (descending, with -1 (unknown) last), then by TCP ms (ascending)
+    $responded = $results | Where-Object { $_ -ne $null } | Sort-Object @{E={$_.Speed};Ascending=$false}, @{E={$_.TcpMs};Ascending=$true}
+    if ($responded.Count -eq 0) {
+        Write-Log "Warn" "No mirrors responded, using official mirror" -NoConsole
+        $fallback = $mirrors[0].Base
+        Set-Msys2Mirror -BaseUrl $fallback
+        $Script:_selectedMsys2Mirror = $fallback
+        return $false
+    }
+
+    $winner = $responded[0]
+    $speedInfo = if ($winner.Speed -ge 0) { "$($winner.Speed) KB/s" } else { "no speed test" }
+    Write-Info "Selected mirror: $($winner.Name) (TCP:${($winner.TcpMs)}ms, $speedInfo) -- $($winner.Base)"
+    Set-Msys2Mirror -BaseUrl $winner.Base
+    $Script:_selectedMsys2Mirror = $winner.Base
+    return $true
 }
 
 # ============================================================================
@@ -487,8 +660,8 @@ function Step-Init {
         if ($resolved) { $Script:_dataDir = $resolved.Path }
     } catch {}
 
-    Assert-PathSafe $Script:_installDir
-    Assert-PathSafe $Script:_dataDir
+    $null = Assert-PathSafe $Script:_installDir
+    $null = Assert-PathSafe $Script:_dataDir
 
     $Script:_pythonDir     = Join-PathSafe $Script:_installDir "python"
     $Script:_msys2Dir      = Join-PathSafe $Script:_installDir ".msys2"
@@ -535,13 +708,22 @@ function Step-DownloadPython {
     Ensure-Directory $tempDir
     $pythonZip = Join-PathSafe $tempDir "python-embed.zip"
 
-    try {
-        Invoke-DownloadWithRetry -Url $Script:PYTHON_URL -OutFile $pythonZip `
-            -MaxRetries $Script:MaxRetries -TimeoutSec $Script:TimeoutSec `
-            -ExpectedHash $Script:PYTHON_SHA256 -Force:$Script:ForceRedownload
-    } catch {
-        Write-Fail "Failed to download Python: $_"
+    $lastError = $null
+    foreach ($url in $Script:PYTHON_FALLBACK_URLS) {
+        try {
+            Invoke-DownloadWithRetry -Url $url -OutFile $pythonZip `
+                -MaxRetries 2 -TimeoutSec 600 `
+                -ExpectedHash $Script:PYTHON_SHA256 -Force:$Script:ForceRedownload
+            $lastError = $null
+            break
+        } catch {
+            $lastError = $_
+            Write-Log "Warn" "Python download from $url failed, trying next mirror" -NoConsole
+            Remove-Item $pythonZip -Force -ErrorAction SilentlyContinue
+            Remove-Item "$pythonZip.tmp" -Force -ErrorAction SilentlyContinue
+        }
     }
+    if ($lastError) { Write-Fail "Failed to download Python: $lastError" }
 
     $Script:pythonZipPath = $pythonZip
     Write-OK "Python embedded zip ready (SHA256 verified)"
@@ -554,13 +736,22 @@ function Step-DownloadGetPip {
     Ensure-Directory $tempDir
     $getPipPath = Join-PathSafe $tempDir "get-pip.py"
 
-    try {
-        Invoke-DownloadWithRetry -Url $Script:GETPIP_URL -OutFile $getPipPath `
-            -MaxRetries $Script:MaxRetries -TimeoutSec $Script:TimeoutSec `
-            -ExpectedHash $Script:GETPIP_SHA256 -Force:$Script:ForceRedownload
-    } catch {
-        Write-Fail "Failed to download get-pip.py: $_"
+    $lastError = $null
+    foreach ($url in $Script:GETPIP_FALLBACK_URLS) {
+        try {
+            Invoke-DownloadWithRetry -Url $url -OutFile $getPipPath `
+                -MaxRetries 2 -TimeoutSec 600 `
+                -ExpectedHash $Script:GETPIP_SHA256 -Force:$Script:ForceRedownload
+            $lastError = $null
+            break
+        } catch {
+            $lastError = $_
+            Write-Log "Warn" "get-pip.py from $url failed, trying next mirror" -NoConsole
+            Remove-Item $getPipPath -Force -ErrorAction SilentlyContinue
+            Remove-Item "$getPipPath.tmp" -Force -ErrorAction SilentlyContinue
+        }
     }
+    if ($lastError) { Write-Fail "Failed to download get-pip.py: $lastError" }
 
     $Script:getPipPath = $getPipPath
     Write-OK "get-pip.py ready (SHA256 verified)"
@@ -571,13 +762,7 @@ function Step-ExtractPython {
     Write-Step "3/14" "Extracting Python $($Script:PYTHON_VERSION) embedded..."
 
     $pythonExeCheck = Join-PathSafe $Script:_pythonDir "python.exe"
-    if ((Test-Path $pythonExeCheck -PathType Leaf) -and -not $Script:ForceRedownload) {
-        Write-OK "Python already extracted, skipping"
-        Set-InstallState -Step "python_extracted" -Status "ok"
-        return
-    }
-
-    try {
+    if (-not (Test-Path $pythonExeCheck -PathType Leaf) -or $Script:ForceRedownload) {
         Remove-DirectorySafe $Script:_pythonDir -Force
         Ensure-Directory $Script:_pythonDir
 
@@ -586,28 +771,42 @@ function Step-ExtractPython {
         if (-not (Test-Path $pythonExeCheck -PathType Leaf)) {
             throw "python.exe not found after extraction"
         }
+    } else {
+        Write-OK "Python already extracted, skipping re-extraction"
+    }
 
-        # Patch python312._pth to enable site-packages
+    # Always patch python312._pth (BOM-free write, runs even on re-run)
+    try {
         $pthFile = Join-PathSafe $Script:_pythonDir "python312._pth"
         if (Test-Path $pthFile -PathType Leaf) {
             $pthContent = Get-Content -Path $pthFile -Raw -Encoding utf8
             $pthContent = $pthContent -replace '#import site', 'import site'
-            $pthContent | Out-File -FilePath $pthFile -Encoding utf8 -Force
-            Write-Log "Info" "Patched python312._pth to enable site-packages" -NoConsole
+            [System.IO.File]::WriteAllText($pthFile, $pthContent)
+            Write-Log "Info" "Patched python312._pth - site-packages enabled" -NoConsole
         } else {
             Write-Log "Warn" "python312._pth not found (may be different version)" -NoConsole
         }
-
-        Write-OK "Python extracted to $($Script:_pythonDir)"
-        Set-InstallState -Step "python_extracted" -Status "ok"
     } catch {
-        Remove-DirectorySafe $Script:_pythonDir -Force
-        Write-Fail "Python extraction failed: $_"
+        Write-Log "Warn" "Could not patch python312._pth: $_" -NoConsole
     }
+
+    Set-InstallState -Step "python_extracted" -Status "ok"
 }
 
 function Step-InstallPip {
     Write-Step "4/14" "Installing pip into embedded Python..."
+
+    # Ensure python312._pth is valid (BOM-free + import site uncommented)
+    try {
+        $pthFile = Join-PathSafe $Script:_pythonDir "python312._pth"
+        if (Test-Path $pthFile -PathType Leaf) {
+            $pthContent = Get-Content -Path $pthFile -Raw -Encoding utf8
+            $pthContent = $pthContent -replace '#import site', 'import site'
+            [System.IO.File]::WriteAllText($pthFile, $pthContent)
+        }
+    } catch {
+        Write-Log "Warn" "Could not verify python312._pth: $_" -NoConsole
+    }
 
     $pipCheck = Join-PathSafe $Script:_pythonDir "Scripts\pip.exe"
     if ((Test-Path $pipCheck -PathType Leaf) -and -not $Script:ForceRedownload) {
@@ -639,24 +838,36 @@ function Step-InstallPythonPackages {
         Write-Info "Installing: $pkgList"
 
         $pipArgs = @("-m", "pip", "install", "--no-cache-dir") + $Script:PIP_PACKAGES
+        if ($Script:_pypiMirror) {
+            $pipArgs = @("-m", "pip", "install", "--no-cache-dir", "-i", $Script:_pypiMirror) + $Script:PIP_PACKAGES
+        }
         $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList $pipArgs -Wait -PassThru -NoNewWindow
         if ($proc.ExitCode -ne 0) {
             throw "pip install failed (exit $($proc.ExitCode))"
         }
 
-        # Verify imports
+        # Verify imports via temp script (avoids -c quoting issues on PS5.1)
         Write-Info "Verifying Python packages..."
-        $imports = @(
-            "import pymupdf4llm; print('pymupdf4llm:', pymupdf4llm.__version__)"
-            "import markitdown; print('markitdown: ok')"
-            "import watchdog; print('watchdog:', watchdog.__version__)"
-        )
-        foreach ($importCmd in $imports) {
-            $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList @("-c", $importCmd) -Wait -PassThru -NoNewWindow
-            if ($proc.ExitCode -ne 0) {
-                throw "Import verification failed for: $importCmd"
-            }
+        $verifyScript = Join-PathSafe $env:TEMP "mark-dawn-verify-imports.py"
+        $verifyCode = @'
+import sys, importlib
+modules = ["pymupdf4llm", "markitdown", "watchdog"]
+all_ok = True
+for mod in modules:
+    try:
+        importlib.import_module(mod)
+        print(f"{mod}: ok")
+    except Exception as e:
+        print(f"{mod}: FAIL - {e}")
+        all_ok = False
+sys.exit(0 if all_ok else 1)
+'@
+        [System.IO.File]::WriteAllText($verifyScript, $verifyCode)
+        $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList @($verifyScript) -Wait -PassThru -NoNewWindow
+        if ($proc.ExitCode -ne 0) {
+            throw "Import verification failed"
         }
+        Remove-Item $verifyScript -Force -ErrorAction SilentlyContinue
 
         Write-OK "Python packages installed and verified"
         Set-InstallState -Step "python_packages_installed" -Status "ok"
@@ -670,14 +881,42 @@ function Step-DownloadMsys2 {
     $tempDir = Join-PathSafe $env:TEMP "mark-dawn-installer"
     Ensure-Directory $tempDir
     $installerPath = Join-PathSafe $tempDir "msys2-sfx.exe"
+    $sfxFile = "msys2-base-x86_64-$($Script:MSYS2_VERSION.Replace('-','')).sfx.exe"
 
-    try {
-        Invoke-DownloadWithRetry -Url $Script:MSYS2_URL -OutFile $installerPath `
-            -MaxRetries $Script:MaxRetries -TimeoutSec $Script:TimeoutSec `
-            -ExpectedHash $Script:MSYS2_SHA256 -Force:$Script:ForceRedownload
-    } catch {
-        Write-Fail "Failed to download MSYS2 SFX: $_"
+    # Check cache first
+    if (-not $Script:ForceRedownload -and (Test-Path $installerPath -PathType Leaf)) {
+        if (Test-Sha256 -FilePath $installerPath -ExpectedHash $Script:MSYS2_SHA256) {
+            Write-OK "MSYS2 SFX already cached (SHA256 OK)"
+            $Script:msys2InstallerPath = $installerPath
+            Set-InstallState -Step "msys2_downloaded" -Status "ok"
+            return
+        }
+        Write-Log "Warn" "Cached SFX hash mismatch, re-downloading" -NoConsole
     }
+
+    # Build fallback URL list: mirrors first (works without VPN), then GitHub
+    $urls = @()
+    foreach ($m in $Script:MSYS2_MIRRORS) {
+        $urls += "$($m.Base)/distrib/x86_64/$sfxFile"
+    }
+    $urls += $Script:MSYS2_URL
+
+    $lastError = $null
+    foreach ($url in $urls) {
+        try {
+            Invoke-DownloadWithRetry -Url $url -OutFile $installerPath `
+                -MaxRetries 2 -TimeoutSec 600 `
+                -ExpectedHash $Script:MSYS2_SHA256
+            $lastError = $null
+            break
+        } catch {
+            $lastError = $_
+            Write-Log "Warn" "Failed to download from $url, trying next mirror" -NoConsole
+            Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+            Remove-Item "$installerPath.tmp" -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if ($lastError) { Write-Fail "All download URLs failed for MSYS2 SFX: $lastError" }
 
     $Script:msys2InstallerPath = $installerPath
     Write-OK "MSYS2 SFX ready (SHA256 verified)"
@@ -695,45 +934,123 @@ function Step-ExtractMsys2 {
         return
     }
 
-    $parentDir = Split-Path $Script:_installDir -Parent
-    $tempExtract = Join-PathSafe $parentDir ".msys2-extract"
+    # Remove old directory, then extract SFX directly to .msys2
+    Remove-DirectorySafe $Script:_msys2Dir -Force
+    Ensure-Directory $Script:_msys2Dir
 
     try {
-        Remove-DirectorySafe $Script:_msys2Dir -Force
-        Remove-DirectorySafe $tempExtract -Force
-        Ensure-Directory $tempExtract
-
-        Write-Log "Info" "Extracting SFX to: $tempExtract" -NoConsole
+        Write-Log "Info" "Extracting SFX to: $Script:_msys2Dir" -NoConsole
 
         $proc = Start-Process -FilePath $Script:msys2InstallerPath `
-            -ArgumentList "-y", "-o`"$tempExtract`"" `
+            -ArgumentList "-y", "-o`"$Script:_msys2Dir`"" `
             -Wait -PassThru -NoNewWindow
 
         if ($proc.ExitCode -ne 0) {
             throw "Extractor exited with code $($proc.ExitCode)"
         }
 
-        $msys2Contents = Join-PathSafe $tempExtract "msys2"
-        if (-not (Test-Path $msys2Contents -PathType Container)) {
-            throw "Expected extraction directory not found: $msys2Contents"
+        # Handle subdirectory structure: some SFX versions create a subfolder
+        $extractedRoot = $Script:_msys2Dir
+        $subFound = $false
+        foreach ($sub in @("msys2", "msys64")) {
+            $candidate = Join-PathSafe $Script:_msys2Dir $sub
+            if (Test-Path (Join-PathSafe $candidate "usr\bin\bash.exe") -PathType Leaf) {
+                Write-Log "Info" "SFX extracted into '$sub' subdirectory, flattening..." -NoConsole
+                $children = Get-ChildItem $candidate -Force
+                foreach ($child in $children) {
+                    $destName = Split-Path $child.FullName -Leaf
+                    $dest = Join-PathSafe $Script:_msys2Dir $destName
+                    # Move-Item can fail if dest exists (e.g. the $sub dir itself)
+                    Move-Item -Path $child.FullName -Destination $dest -Force -ErrorAction Stop
+                }
+                Remove-Item $candidate -Force -Recurse -ErrorAction SilentlyContinue
+                $subFound = $true
+                break
+            }
         }
 
-        # Move to install dir as .msys2
-        Move-Item -Path $msys2Contents -Destination $Script:_msys2Dir -Force -ErrorAction Stop
-
+        # Verify critical files exist in the final location
         if (-not (Test-Path $bashCheck -PathType Leaf)) {
             throw "bash.exe not found after extraction"
+        }
+        $dllCount = @(Get-ChildItem (Join-PathSafe $Script:_msys2Dir "usr\bin\*.dll") -ErrorAction SilentlyContinue).Count
+        if ($dllCount -eq 0) {
+            throw "No DLLs found in usr/bin/ after extraction (corrupted SFX)"
         }
 
         Write-OK "MSYS2 extracted to $($Script:_msys2Dir)"
         Set-InstallState -Step "msys2_extracted" -Status "ok"
     } catch {
-        Remove-DirectorySafe $tempExtract -Force
         Remove-DirectorySafe $Script:_msys2Dir -Force
         Write-Fail "MSYS2 extraction failed: $_"
-    } finally {
-        Remove-DirectorySafe $tempExtract -Force
     }
+}
+
+function Disable-UnusedRepos {
+    $conf = Join-PathSafe $Script:_msys2Dir "etc\pacman.conf"
+    if (-not (Test-Path $conf -PathType Leaf)) {
+        Write-Log "Warn" "pacman.conf not found at $conf" -NoConsole
+        return
+    }
+    $lines = Get-Content $conf
+    $kept = @("mingw64", "msys")
+    $inUnused = $false
+    $newLines = @()
+    foreach ($line in $lines) {
+        if ($line -match '^\[(.+)\]') {
+            $section = $matches[1]
+            $inUnused = $section -ne "options" -and $section -notin $kept
+        } elseif ($inUnused -and $line -match '^\s*(Include|Server)\s*=') {
+            $newLines += "# $line  # disabled (unused repository)"
+            continue
+        }
+        $newLines += $line
+    }
+    # Force single download + timeout/retry for unstable connections
+    $hasParallel = $false
+    $hasSigLevel = $false
+    $hasConnectTimeout = $false
+    $hasXferCommand = $false
+    for ($i = 0; $i -lt $newLines.Count; $i++) {
+        if ($newLines[$i] -match '^ParallelDownloads\s*=') {
+            $newLines[$i] = 'ParallelDownloads = 1'
+            $hasParallel = $true
+        }
+        if ($newLines[$i] -match '^SigLevel\s*=') {
+            $newLines[$i] = 'SigLevel = Never'
+            $hasSigLevel = $true
+        }
+        if ($newLines[$i] -match '^ConnectTimeout\s*=') {
+            $newLines[$i] = 'ConnectTimeout = 15'
+            $hasConnectTimeout = $true
+        }
+        if ($newLines[$i] -match '^XferCommand\s*=') {
+            $newLines[$i] = "XferCommand = /usr/bin/curl --connect-timeout 10 --max-time 300 --retry 2 --retry-delay 3 -C - -f -L -o %o %u"
+            $hasXferCommand = $true
+        }
+    }
+    if (-not $hasParallel) {
+        for ($i = 0; $i -lt $newLines.Count; $i++) {
+            if ($newLines[$i] -match '^\[options\]') {
+                $newLines = $newLines[0..$i] + @('ParallelDownloads = 1') + $newLines[($i+1)..($newLines.Count-1)]
+                break
+            }
+        }
+    }
+    # Insert missing options after ParallelDownloads
+    $optIndex = -1
+    for ($i = 0; $i -lt $newLines.Count; $i++) {
+        if ($newLines[$i] -match '^ParallelDownloads\s*=') { $optIndex = $i; break }
+    }
+    $insertions = @()
+    if (-not $hasSigLevel) { $insertions += 'SigLevel = Never' }
+    if (-not $hasConnectTimeout) { $insertions += 'ConnectTimeout = 15' }
+    if (-not $hasXferCommand) { $insertions += "XferCommand = /usr/bin/curl --connect-timeout 10 --max-time 300 --retry 2 --retry-delay 3 -C - -f -L -o %o %u" }
+    if ($insertions.Count -gt 0) {
+        $newLines = $newLines[0..$optIndex] + $insertions + $newLines[($optIndex+1)..($newLines.Count-1)]
+    }
+    [System.IO.File]::WriteAllText($conf, ($newLines -join "`r`n"))
+    Write-Log "Debug" "Disabled unused repos in pacman.conf" -NoConsole
 }
 
 function Step-InitMsys2 {
@@ -748,22 +1065,55 @@ function Step-InitMsys2 {
         return
     }
 
-    $stateFileCheck = Join-PathSafe $Script:_msys2Dir "var\lib\pacman\local\ALPM_DB_VERSION"
-    if ((Test-Path $stateFileCheck -PathType Leaf) -and -not $Script:ForceRedownload) {
+    $pacmanDb = Join-PathSafe $Script:_msys2Dir "var\lib\pacman\local"
+    $alpmDb = Join-PathSafe $pacmanDb "ALPM_DB_VERSION"
+    $gpgDir = Join-PathSafe $Script:_msys2Dir "etc\pacman.d\gnupg"
+    $gpgExe = Join-PathSafe $Script:_msys2Dir "usr\bin\gpg.exe"
+
+    # Fully initialized check
+    if ((Test-Path $alpmDb -PathType Leaf) -and -not $Script:ForceRedownload) {
         Write-OK "MSYS2 already initialized, skipping"
         Set-InstallState -Step "msys2_initialized" -Status "ok"
         return
     }
 
-    try {
-        Write-Info "Initializing pacman keyring..."
-        Invoke-Msys2Bash -Msys2Dir $Script:_msys2Dir -Command "pacman-key --init 2>&1" -ExpectedExitCodes @(0, 1)
+    # Detect corrupt or partial MSYS2 by checking key binaries
+    $missing = @()
+    $usrBin = Join-PathSafe $Script:_msys2Dir "usr\bin"
+    if (-not (Test-Path (Join-PathSafe $usrBin "bash.exe") -PathType Leaf)) { $missing += "usr/bin/bash.exe" }
+    $dlls = @(Get-ChildItem (Join-PathSafe $usrBin "*.dll") -ErrorAction SilentlyContinue)
+    if ($dlls.Count -eq 0) { $missing += "usr/bin/*.dll (no DLLs at all)" }
+    if ($missing.Count -gt 0) {
+        $dllList = $dlls | ForEach-Object { $_.Name } | Sort-Object
+        Write-Log "Warn" "DLLs found in usr/bin: $($dllList -join ', ')" -NoConsole
+        Write-Log "Warn" "Contents of usr/bin: $(Get-ChildItem $usrBin -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })" -NoConsole
+        Write-Fail "MSYS2 installation corrupt (missing: $($missing -join ', ')). The SFX download may have returned a wrong file. Please re-run with -ForceRedownload -Msys2Mirror https://mirror.yandex.ru/msys2 to force a specific mirror."
+    }
 
-        Write-Info "Populating keyring..."
-        Invoke-Msys2Bash -Msys2Dir $Script:_msys2Dir -Command "pacman-key --populate msys2 mingw64 2>&1" -ExpectedExitCodes @(0, 1)
+    $keyringExists = (Test-Path $gpgDir -PathType Container)
+
+    try {
+        if (-not $keyringExists) {
+            Write-Info "Initializing pacman keyring..."
+            Invoke-Msys2Bash -Msys2Dir $Script:_msys2Dir -Command "pacman-key --init 2>&1"
+
+            Write-Info "Populating keyring..."
+            Invoke-Msys2Bash -Msys2Dir $Script:_msys2Dir -Command "pacman-key --populate msys2 mingw64 2>&1"
+        } else {
+            Write-Info "Keyring already exists, skipping init"
+        }
+
+        # Ensure local database directory exists before sync
+        Ensure-Directory $pacmanDb
+
+        Write-Info "Selecting fastest mirror..."
+        Select-FastestMirror
+
+        Write-Info "Disabling unused repositories..."
+        Disable-UnusedRepos
 
         Write-Info "Updating package databases..."
-        Invoke-Msys2Bash -Msys2Dir $Script:_msys2Dir -Command "pacman -Sy --noconfirm --disable-download-timeout 2>&1" -ExpectedExitCodes @(0, 1)
+        Invoke-Msys2Bash -Msys2Dir $Script:_msys2Dir -Command "pacman -Sy --noconfirm --disable-download-timeout 2>&1"
 
         Write-OK "MSYS2 initialized"
         Set-InstallState -Step "msys2_initialized" -Status "ok"
@@ -779,7 +1129,43 @@ function Step-InstallMsys2Tools {
         $pkgList = $Script:MSYS2_TOOL_PACKAGES -join " "
         Write-Info "Installing packages: $pkgList"
 
-        Invoke-Msys2Bash -Msys2Dir $Script:_msys2Dir -Command "pacman -S --noconfirm --needed --disable-download-timeout $pkgList 2>&1" -ExpectedExitCodes @(0, 1)
+        # Persistent pacman cache dir so retries only fetch missing packages
+        $cacheDir = Join-PathSafe $Script:_installDir ".pacman-cache"
+        Ensure-Directory $cacheDir
+        # Convert Windows path to MSYS2 path: C:\foo\bar -> /c/foo/bar
+        $cachePath = "/" + ($cacheDir[0]).ToString().ToLower() + $cacheDir.Substring(2) -replace '\\', '/'
+
+        $lastError = $null
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+                # Select fastest mirror (re-probes all mirrors if previous attempt failed)
+                if ($attempt -gt 1) { $Script:_selectedMsys2Mirror = "" }
+                Select-FastestMirror | Out-Null
+                Disable-UnusedRepos
+
+                # Also refresh package databases before tool install
+                Invoke-Msys2Bash -Msys2Dir $Script:_msys2Dir -Command @"
+mkdir -p "$cachePath"
+pacman -Sy --noconfirm --disable-download-timeout 2>&1
+pacman -S --noconfirm --needed --disable-download-timeout \
+    --cachedir "$cachePath" \
+    $pkgList 2>&1
+"@ -ExpectedExitCodes @(0)
+                $lastError = $null
+                break
+            } catch {
+                $lastError = $_
+                if ($Script:_selectedMsys2Mirror) {
+                    $Script:_failedMsys2Mirrors += $Script:_selectedMsys2Mirror
+                    Write-Log "Info" "Blacklisting mirror: $Script:_selectedMsys2Mirror" -NoConsole
+                }
+                $Script:_selectedMsys2Mirror = ""
+                if ($attempt -ge 3) { throw }
+                Write-Log "Info" "pacman attempt $attempt/3 failed, retrying in 5s..." -NoConsole
+                Start-Sleep -Seconds 5
+            }
+        }
+        if ($lastError) { throw $lastError }
 
         # Verify critical binaries exist
         $checks = @(
@@ -811,12 +1197,14 @@ function Step-DownloadTessdata {
 
     $failed = @()
     $succeeded = @()
+    $allLangs = $Script:TESSDATA_LANGS
+    $minSize = $Script:TESSDATA_MIN_SIZE
 
-    foreach ($lang in $Script:TESSDATA_LANGS) {
+    # Determine which languages need downloading (skip cached + valid)
+    $pending = @()
+    foreach ($lang in $allLangs) {
         $dest = Join-PathSafe $Script:_tessdataDir "$lang.traineddata"
-        $url = "$($Script:TESSDATA_BASE_URL)/$lang.traineddata"
         $expectedHash = $Script:TESSDATA_SHA256[$lang]
-
         if ((Test-Path $dest -PathType Leaf) -and -not $Script:ForceRedownload) {
             if ($Script:SkipVerification -or (Test-Sha256 -FilePath $dest -ExpectedHash $expectedHash)) {
                 $succeeded += $lang
@@ -826,29 +1214,57 @@ function Step-DownloadTessdata {
                 Write-Log "Warn" "Language model '$lang' hash mismatch, re-downloading" -NoConsole
             }
         }
+        $tessdataLangUrl = "$($Script:TESSDATA_BASE_URL)/$lang.traineddata"
+        $tessdataMirrorUrl = "$($Script:TESSDATA_MIRROR_URL)/$lang.traineddata"
+        $pending += @{ Lang = $lang; Dest = $dest; Url = $tessdataMirrorUrl; FallbackUrl = $tessdataLangUrl; Hash = $expectedHash }
+    }
 
-        Write-Log "Info" "Downloading $lang language model..." -NoConsole
-        try {
-            $tempDest = "$dest.tmp"
-            Invoke-DownloadWithRetry -Url $url -OutFile $tempDest `
-                -MaxRetries $Script:MaxRetries -TimeoutSec $Script:TimeoutSec `
-                -ExpectedHash $expectedHash -Force:$true
-
-            $fileInfo = Get-Item $tempDest
-            if ($fileInfo.Length -lt $Script:TESSDATA_MIN_SIZE) {
-                throw "File too small ($($fileInfo.Length) bytes) — download may be truncated"
+    if ($pending.Count -eq 0) {
+        Write-OK "Language models ready: $($succeeded -join ', ')"
+        Write-Log "Debug" "No tessdata downloads needed" -NoConsole
+    } else {
+        Write-Info "Downloading $($pending.Count) language models in parallel..."
+        $jobScript = {
+            param($Lang, $Dest, $PrimaryUrl, $FallbackUrl, $ExpectedHash, $MinSize, $TimeoutSec, $MaxRetries)
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            $urls = @($PrimaryUrl) + @($FallbackUrl)
+            $tempFile = "$Dest.tmp"
+            foreach ($url in $urls) {
+                for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+                    try {
+                        Invoke-WebRequest -Uri $url -OutFile $tempFile -UseBasicParsing -ErrorAction Stop -TimeoutSec $TimeoutSec
+                        $info = Get-Item $tempFile -ErrorAction Stop
+                        if ($info.Length -lt $MinSize) { throw "File too small ($($info.Length) bytes)" }
+                        if ($ExpectedHash) {
+                            $actualHash = (Get-FileHash $tempFile -Algorithm SHA256).Hash.ToLower()
+                            if ($actualHash -ne $ExpectedHash) { throw "SHA256 hash mismatch" }
+                        }
+                        if (Test-Path $Dest -PathType Leaf) { Remove-Item $Dest -Force }
+                        Rename-Item $tempFile -NewName (Split-Path $Dest -Leaf) -ErrorAction Stop
+                        return @{ Lang = $Lang; Success = $true }
+                    } catch {
+                        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+                        if ($attempt -ge $MaxRetries) {
+                            break
+                        }
+                        Start-Sleep -Seconds ([Math]::Min(5 * $attempt, 30))
+                    }
+                }
             }
-
-            if (Test-Path $dest) { Remove-Item $dest -Force }
-            Rename-Item $tempDest -NewName "$lang.traineddata"
-            $succeeded += $lang
-        } catch {
-            Write-Log "Warn" "Failed to download '$lang': $_" -NoConsole
-            Remove-Item -Path $tempDest -Force -ErrorAction SilentlyContinue
-            $failed += $lang
+            return @{ Lang = $Lang; Success = $false; Error = "All URLs failed: $_" }
         }
-
-        Start-Sleep -Milliseconds 500
+        $jobs = @()
+        foreach ($p in $pending) {
+            $jobs += Start-Job -ScriptBlock $jobScript -ArgumentList @(
+                $p.Lang, $p.Dest, $p.Url, $p.FallbackUrl, $p.Hash, $minSize,
+                $Script:TimeoutSec, $Script:MaxRetries
+            )
+        }
+        $results = $jobs | Wait-Job | Receive-Job
+        foreach ($r in $results) {
+            if ($r.Success) { $succeeded += $r.Lang }
+            else { $failed += $r.Lang; Write-Log "Warn" "Failed to download '$($r.Lang)': $($r.Error)" -NoConsole }
+        }
     }
 
     if ($succeeded.Count -gt 0) {
@@ -857,6 +1273,15 @@ function Step-DownloadTessdata {
     if ($failed.Count -gt 0) {
         Write-Host "WARNING: Failed to download: $($failed -join ', ')" -ForegroundColor Yellow
         Write-Log "Warn" "Failed to download language models: $($failed -join ', ')"
+    }
+
+    # Copy tesseract config files from MSYS2 (needed for PDF/TXT output modes)
+    $msys2Configs = Join-PathSafe $Script:_msys2Dir "mingw64\share\tessdata\configs"
+    $ourConfigs = Join-PathSafe $Script:_tessdataDir "configs"
+    if (Test-Path $msys2Configs -PathType Container) {
+        Ensure-Directory $ourConfigs
+        Copy-Item -Path "$msys2Configs\*" -Destination $ourConfigs -Force -Recurse -ErrorAction SilentlyContinue
+        Write-Log "Debug" "Copied tesseract config files to: $ourConfigs" -NoConsole
     }
 
     Set-InstallState -Step "tessdata_downloaded" -Status "ok"
@@ -938,14 +1363,20 @@ function Step-Verify {
         }
     }
 
-    # Verify pip and key modules
+    # Verify pip and key modules (via temp script to avoid -c quoting issues)
     if (Test-Path $Script:_pythonExe -PathType Leaf) {
-        $imports = @("pymupdf4llm", "markitdown", "watchdog")
-        foreach ($mod in $imports) {
-            $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList @("-c", "import $mod") -Wait -PassThru -NoNewWindow
-            if ($proc.ExitCode -ne 0) {
-                $failures += "Python module import failed: $mod"
-            }
+        $verifyScript = Join-PathSafe $env:TEMP "mark-dawn-verify-final.py"
+        $code = @"
+import sys
+import pymupdf4llm; print('pymupdf4llm ok')
+import markitdown; print('markitdown ok')
+import watchdog; print('watchdog ok')
+"@
+        [System.IO.File]::WriteAllText($verifyScript, $code)
+        $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList @($verifyScript) -Wait -PassThru -NoNewWindow
+        Remove-Item $verifyScript -Force -ErrorAction SilentlyContinue
+        if ($proc.ExitCode -ne 0) {
+            $failures += "Python module import failed ($($proc.ExitCode))"
         }
     } else {
         $failures += "Python not found for verification"
@@ -1052,6 +1483,33 @@ function Invoke-Install {
     }
 
     Step-Complete
+
+    # Add Windows Defender exclusion for install directory
+    try {
+        $null = Add-MpPreference -ExclusionPath $Script:_installDir -ErrorAction SilentlyContinue
+        $null = Add-MpPreference -ExclusionPath (Join-PathSafe $env:TEMP "mark-dawn-installer") -ErrorAction SilentlyContinue
+        Write-Log "Debug" "Added Windows Defender exclusions" -NoConsole
+    } catch {
+        Write-Log "Debug" "Could not set Defender exclusion (may need Admin)" -NoConsole
+    }
+
+    # Prompt to start watcher immediately
+    Write-Host ""
+    $startAnswer = Read-Host "Start mark-dawn watcher now? [Y/n]"
+    if ($startAnswer -eq '' -or $startAnswer -match '^[yY]') {
+        try {
+            $proc = Start-Process -FilePath $Script:_launcherPath -ArgumentList "start" -Wait -PassThru -NoNewWindow
+            if ($proc.ExitCode -eq 0) {
+                Write-OK "mark-dawn watcher started"
+            } else {
+                Write-Log "Warn" "Launcher exited with code $($proc.ExitCode)" -NoConsole
+            }
+        } catch {
+            Write-Log "Warn" "Failed to start watcher: $_" -NoConsole
+        }
+    } else {
+        Write-Info "You can start it later with: & `"$($Script:_launcherPath)`" start"
+    }
 }
 
 # ============================================================================
@@ -1177,7 +1635,7 @@ goto help
             echo Cleaning up stale PID file...
             del "%PID_FILE%" >nul 2>&1
         ) else (
-            echo FAIL: mark-dawn is already running (PID !OLD_PID!)
+            echo FAIL: mark-dawn is already running - PID !OLD_PID!
             echo Stop it first: mark-dawn.bat stop
             exit /b 1
         )
@@ -1225,7 +1683,7 @@ goto help
 
     tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul 2>&1
     if errorlevel 1 (
-        echo Process not found (stale PID file), cleaning up...
+        echo Process not found - stale PID file, cleaning up...
         del "%PID_FILE%" >nul 2>&1
         goto end
     )
@@ -1262,7 +1720,7 @@ goto help
     if !EXIT_CODE! equ 0 (
         echo OK: Conversion complete
     ) else (
-        echo FAIL: Conversion failed (exit code !EXIT_CODE!)
+        echo FAIL: Conversion failed - exit code !EXIT_CODE!
     )
     exit /b !EXIT_CODE!
 
@@ -1283,10 +1741,10 @@ goto help
     set /p PID=<"%PID_FILE%"
     tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul 2>&1
     if errorlevel 1 (
-        echo mark-dawn is not running (stale PID file, cleaning up)
+        echo mark-dawn is not running - stale PID file, cleaning up
         del "%PID_FILE%" >nul 2>&1
     ) else (
-        echo mark-dawn is running (PID %PID%)
+        echo mark-dawn is running - PID %PID%
         echo    Inbox:    %DATA_DIR%\Inbox
         echo    Research: %DATA_DIR%\Research
         echo    Logs:     %LOG_FILE%
@@ -1431,7 +1889,7 @@ def file_is_ready(filepath, min_size=1024, max_age=2.0):
         if not filepath.exists():
             return False
         if filepath.stat().st_size < min_size:
-            return True
+            return False
         s1 = filepath.stat().st_size
         time.sleep(0.5)
         s2 = filepath.stat().st_size
@@ -1678,6 +2136,8 @@ function Show-Help {
     Write-Host "Install options:" -ForegroundColor Yellow
     Write-Host "  -InstallDir <path>   Custom installation directory (default: %USERPROFILE%\mark-dawn)"
     Write-Host "  -DataDir <path>      Custom data directory (default: %USERPROFILE%\Documents)"
+    Write-Host "  -Msys2Mirror <url>   MSYS2 mirror base URL (skip auto-probe, e.g. https://mirrors.ustc.edu.cn/msys2)"
+    Write-Host "  -PypiMirror <url>    PyPI mirror for pip (e.g. https://mirror.yandex.ru/mirror/pypi/simple/)"
     Write-Host "  -SkipInit            Skip MSYS2 initialization (for re-runs)"
     Write-Host "  -ForceRedownload     Re-download all artifacts"
     Write-Host "  -SkipVerification    Skip SHA256 checks (not recommended)"
@@ -1706,12 +2166,27 @@ function Main {
     if ($Uninstall) {
         $Script:_installDir = if ($InstallDir) { $InstallDir } else { $Script:DEFAULT_INSTALL_DIR }
         $Script:_dataDir    = if ($DataDir)    { $DataDir }    else { $Script:DEFAULT_DATA_DIR }
+        $Script:_pythonDir  = Join-PathSafe $Script:_installDir "python"
+        $Script:_stateFile  = Join-PathSafe $Script:_installDir ".install-state.json"
         Invoke-Uninstall
         return
     }
 
     $Script:_installDir = if ($InstallDir) { $InstallDir } else { $Script:DEFAULT_INSTALL_DIR }
     $Script:_dataDir    = if ($DataDir)    { $DataDir }    else { $Script:DEFAULT_DATA_DIR }
+    $Script:_msys2MirrorOverride = $Msys2Mirror
+    $Script:_pypiMirror = $PypiMirror
+    # Set all path variables BEFORE Invoke-Install (so skipped steps still have valid paths)
+    $Script:_pythonDir     = Join-PathSafe $Script:_installDir "python"
+    $Script:_msys2Dir      = Join-PathSafe $Script:_installDir ".msys2"
+    $Script:_scriptsDir    = Join-PathSafe $Script:_installDir "scripts"
+    $Script:_logsDir       = Join-PathSafe $Script:_installDir "logs"
+    $Script:_tessdataDir   = Join-PathSafe $Script:_installDir "tessdata"
+    $Script:_launcherPath  = Join-PathSafe $Script:_installDir "mark-dawn.bat"
+    $Script:_pidFile       = Join-PathSafe $Script:_installDir "mark-dawn.pid"
+    $Script:_logFile       = Join-PathSafe $Script:_logsDir "mark-dawn.log"
+    $Script:_stateFile     = Join-PathSafe $Script:_installDir ".install-state.json"
+    $Script:_pythonExe     = Join-PathSafe $Script:_pythonDir "python.exe"
 
     Invoke-Install
 }
