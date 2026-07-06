@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.sh |
 ```
 ❌ **Windows (PowerShell) (MSYS2 Portable)**
 ```powershell
-iwr -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.ps1" -OutFile "$env:TEMP\install.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"
+iwr -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.ps1" -OutFile "$env:TEMP\mark-dawn.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\mark-dawn.ps1"
 ```
 ❌ **macOS**
 ```sh
