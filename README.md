@@ -46,9 +46,18 @@ The universal installer auto-detects your macOS version. Pre-26 → runs the Hom
 Zero container overhead — pure native Unix processes.
 
 ### 🪟 **Windows** — MSYS2 portable (no admin)
+
+**One-liner (PowerShell 3+):**
 ```powershell
-iwr -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/mark-dawn.ps1" -OutFile "$env:TEMP\mark-dawn.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\mark-dawn.ps1"
+powershell -c "iwr -Uri 'https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.ps1' -UseBasicParsing | iex"
 ```
+
+**Or download + run:**
+```powershell
+curl.exe -LO "https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.ps1"
+.\install.ps1
+```
+
 Downloads embedded Python + MSYS2 (tesseract, ghostscript, djvulibre). No admin, no package manager. Self-contained in `%USERPROFILE%\mark-dawn\`.
 
 ---
