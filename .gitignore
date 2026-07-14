@@ -23,3 +23,8 @@ blueprint*.md
 
 # Logs
 *.log
+
+# Agent/tool metadata
+.opencode/
+.hermes/
+.git/opencode
