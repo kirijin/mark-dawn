@@ -63,15 +63,15 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "Validating PowerShell syntax for install.ps1..."
-          try {
-            $content = Get-Content -Path "install.ps1" -Raw
-            [scriptblock]::Create($content) | Out-Null
-            Write-Host "✓ PowerShell syntax valid"
-          } catch {
-            Write-Host "❌ PowerShell syntax error:"
-            Write-Host $_.Exception.Message
+          $content = Get-Content -Path "install.ps1" -Raw
+          $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseInput($content, [ref]$null, [ref]$errors)
+          if ($errors.Count -gt 0) {
+            Write-Host "❌ PowerShell syntax error(s):"
+            $errors | ForEach-Object { Write-Host "  $($_.Message)" }
             exit 1
           }
+          Write-Host "✓ PowerShell syntax valid"
 
       - name: Validate Python syntax
         run: |
