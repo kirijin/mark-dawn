@@ -23,6 +23,23 @@
 #>
 
 # ============================================================================
+# PARAMETERS (must be first statement after comments)
+# ============================================================================
+param(
+    [string]$InstallDir = "",
+    [string]$DataDir = "",
+    [switch]$SkipInit,
+    [switch]$ForceRedownload,
+    [switch]$SkipVerification,
+    [int]$MaxRetries = 3,
+    [int]$TimeoutSec = 300,
+    [ValidateSet("Debug", "Info", "Warn", "Error")]
+    [string]$LogLevel = "Info",
+    [switch]$Help,
+    [switch]$Uninstall
+)
+
+# ============================================================================
 # CONFIGURATION - pinned artifacts with SHA256 verification
 # ============================================================================
 
@@ -73,23 +90,6 @@ $Script:PIP_PACKAGES = @(
 # Default directories
 $Script:DEFAULT_INSTALL_DIR = [System.IO.Path]::Combine($env:USERPROFILE, "mark-dawn")
 $Script:DEFAULT_DATA_DIR    = [System.IO.Path]::Combine($env:USERPROFILE, "Documents")
-
-# ============================================================================
-# PARAMETERS
-# ============================================================================
-param(
-    [string]$InstallDir = "",
-    [string]$DataDir = "",
-    [switch]$SkipInit,
-    [switch]$ForceRedownload,
-    [switch]$SkipVerification,
-    [int]$MaxRetries = 3,
-    [int]$TimeoutSec = 300,
-    [ValidateSet("Debug", "Info", "Warn", "Error")]
-    [string]$LogLevel = "Info",
-    [switch]$Help,
-    [switch]$Uninstall
-)
 
 # ============================================================================
 # INTERNAL STATE (set after parameter resolution)
