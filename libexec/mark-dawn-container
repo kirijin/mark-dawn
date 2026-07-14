@@ -1,0 +1,277 @@
+#!/bin/bash
+# ============================================================================
+# mark-dawn macOS launcher — Apple Container (macOS 26+)
+# Installed by install-macos-container.sh
+# ============================================================================
+set -euo pipefail
+
+IMAGE="${MARK_DAWN_IMAGE:-docker.io/kirijin/mark-dawn:latest}"
+CONTAINER_NAME="mark-dawn"
+DATA_DIR="${MARK_DAWN_DATA_DIR:-$HOME/Documents}"
+LOG_DIR="$HOME/Library/Logs/mark-dawn"
+LOG_FILE="$LOG_DIR/watcher.log"
+CONFIG_DIR="$HOME/Library/Application Support/mark-dawn"
+CONFIG_FILE="$CONFIG_DIR/config"
+PLIST_PATH="$HOME/Library/LaunchAgents/com.mark-dawn.watcher.plist"
+LANGS="${MARK_DAWN_LANGS:-eng+rus+fra+deu+chi_sim+jpn}"
+
+mkdir -p "$LOG_DIR" "$CONFIG_DIR"
+
+# Detect Apple Silicon vs Intel for arch selection
+ARCH="arm64"
+[[ "$(uname -m)" == "x86_64" ]] && ARCH="amd64"
+
+# --- Config ---------------------------------------------------------------
+load_config() {
+    [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+    DATA_DIR="${MARK_DAWN_DATA_DIR:-${data_dir:-$DATA_DIR}}"
+    LANGS="${MARK_DAWN_LANGS:-${langs:-$LANGS}}"
+}
+
+save_config() {
+    cat > "$CONFIG_FILE" <<EOF
+# mark-dawn configuration — generated $(date)
+data_dir="$DATA_DIR"
+langs="$LANGS"
+EOF
+    chmod 600 "$CONFIG_FILE"
+}
+
+log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
+err() { echo "$*" >&2; }
+
+ensure_dirs() {
+    mkdir -p "$DATA_DIR/Inbox" "$DATA_DIR/Research" "$DATA_DIR/Inbox_Failed" \
+             "$DATA_DIR/Inbox/2md" "$DATA_DIR/Inbox/2docx"
+    [[ ! -L "$DATA_DIR/Research/Inbox" ]] && ln -sfn "$DATA_DIR/Inbox" "$DATA_DIR/Research/Inbox" 2>/dev/null || true
+}
+
+# Volume mount args
+volumes() {
+    echo "-v $DATA_DIR/Inbox:/data/Inbox -v $DATA_DIR/Research:/data/Research -v $DATA_DIR/Inbox_Failed:/data/Inbox_Failed"
+}
+
+# --- Commands -------------------------------------------------------------
+cmd_start() {
+    ensure_dirs
+    # Check if container already running
+    if container inspect "$CONTAINER_NAME" &>/dev/null 2>&1; then
+        log "Container $CONTAINER_NAME already exists"
+        if container inspect "$CONTAINER_NAME" | grep -q '"Status": "running"' 2>/dev/null; then
+            log "Watcher already running"
+            exit 0
+        fi
+        container rm "$CONTAINER_NAME" 2>/dev/null || true
+    fi
+
+    log "Starting mark-dawn watcher (Apple Container)..."
+    container run -d --rm --name "$CONTAINER_NAME" \
+        $(volumes) \
+        -e "MARK_DAWN_LANGS=$LANGS" \
+        --arch "linux/$ARCH" \
+        "$IMAGE" watcher
+    log "OK Watcher started via Apple Container"
+    echo "   Image:    $IMAGE"
+    echo "   Arch:     linux/$ARCH"
+    echo "   Inbox:    $DATA_DIR/Inbox"
+    echo "   Research: $DATA_DIR/Research"
+    echo "   Logs:     container logs $CONTAINER_NAME"
+}
+
+cmd_stop() {
+    log "Stopping watcher..."
+    if container inspect "$CONTAINER_NAME" &>/dev/null 2>&1; then
+        container stop "$CONTAINER_NAME" 2>/dev/null || true
+        container rm "$CONTAINER_NAME" 2>/dev/null || true
+    fi
+    log "OK Stopped"
+}
+
+cmd_restart() {
+    cmd_stop
+    sleep 1
+    cmd_start
+}
+
+cmd_convert() {
+    [[ $# -eq 0 ]] && { echo "Usage: mark-dawn convert FILE [--docx]"; exit 1; }
+    file_path=$(realpath "$1")
+    [[ ! -f "$file_path" ]] && { err "File not found: $1"; exit 1; }
+    shift
+    want_docx=""
+    for a in "$@"; do [[ "$a" == "--docx" ]] && want_docx="--docx"; done
+
+    log "Converting: $(basename "$file_path")"
+    ensure_dirs 2>/dev/null || true
+    container run --rm \
+        $(volumes) \
+        -v "$(dirname "$file_path"):/input" \
+        -e "MARK_DAWN_LANGS=$LANGS" \
+        --arch "linux/$ARCH" \
+        "$IMAGE" convert "/input/$(basename "$file_path")" $want_docx
+}
+
+cmd_logs() {
+    container logs -f "$CONTAINER_NAME"
+}
+
+cmd_status() {
+    echo "Runtime:  Apple Container (macOS container CLI)"
+    echo "Image:    $IMAGE"
+    echo "Arch:     linux/$ARCH"
+    echo "Data:     $DATA_DIR"
+    echo "Config:   $CONFIG_FILE"
+    echo "Log:      $LOG_FILE"
+    echo "Languages: $LANGS"
+    echo ""
+    if container inspect "$CONTAINER_NAME" &>/dev/null 2>&1; then
+        container list --filter "name=$CONTAINER_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+    else
+        echo "Watcher: STOPPED (no container)"
+    fi
+    echo ""
+    echo "Inbox contents:"
+    ls -1 "$DATA_DIR/Inbox" 2>/dev/null | head -10 || echo "  (empty)"
+    echo "Research contents:"
+    ls -1 "$DATA_DIR/Research" 2>/dev/null | head -10 || echo "  (empty)"
+}
+
+cmd_update() {
+    log "Updating mark-dawn image..."
+    container image pull "$IMAGE"
+    cmd_restart
+    log "OK Updated to latest image"
+}
+
+cmd_install_service() {
+    ensure_dirs
+    mkdir -p "$(dirname "$PLIST_PATH")"
+    # Generate launchd plist
+    cat > "$PLIST_PATH" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mark-dawn.watcher</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/container</string>
+        <string>run</string>
+        <string>-d</string>
+        <string>--rm</string>
+        <string>--name</string>
+        <string>${CONTAINER_NAME}</string>
+        <string>-v</string>
+        <string>${DATA_DIR}/Inbox:/data/Inbox</string>
+        <string>-v</string>
+        <string>${DATA_DIR}/Research:/data/Research</string>
+        <string>-v</string>
+        <string>${DATA_DIR}/Inbox_Failed:/data/Inbox_Failed</string>
+        <string>-e</string>
+        <string>MARK_DAWN_LANGS=${LANGS}</string>
+        <string>--arch</string>
+        <string>linux/${ARCH}</string>
+        <string>${IMAGE}</string>
+        <string>watcher</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>${LOG_FILE}</string>
+    <key>StandardErrorPath</key>
+    <string>${LOG_FILE}</string>
+</dict>
+</plist>
+PLIST
+    chmod 644 "$PLIST_PATH"
+    launchctl load "$PLIST_PATH" 2>/dev/null || true
+    log "OK Launchd service installed and loaded"
+    echo "   Manage: launchctl start|stop|unload com.mark-dawn.watcher"
+}
+
+cmd_uninstall() {
+    if [[ -f "$PLIST_PATH" ]]; then
+        launchctl unload "$PLIST_PATH" 2>/dev/null || true
+        rm -f "$PLIST_PATH"
+    fi
+    cmd_stop
+    log "OK Uninstalled. Data preserved at $DATA_DIR"
+}
+
+cmd_config() {
+    case "${1:-show}" in
+        show)
+            echo "Current config:"
+            echo "  image:    $IMAGE"
+            echo "  data_dir: $DATA_DIR"
+            echo "  langs:    $LANGS"
+            ;;
+        set)
+            shift
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --image) IMAGE="$2"; shift 2;;
+                    --data-dir) DATA_DIR="$2"; shift 2;;
+                    --langs) LANGS="$2"; shift 2;;
+                    *) err "Unknown config key: $1"; exit 1;;
+                esac
+            done
+            save_config
+            log "OK Config saved"
+            cmd_config show
+            ;;
+        *) err "Usage: mark-dawn config {show|set [--image X] [--data-dir X] [--langs X]}"; exit 1;;
+    esac
+}
+
+# --- Main -----------------------------------------------------------------
+load_config
+
+case "${1:-}" in
+    start)           cmd_start;;
+    stop)            cmd_stop;;
+    restart)         cmd_restart;;
+    convert)         shift; cmd_convert "$@";;
+    logs)            cmd_logs;;
+    status)          cmd_status;;
+    update)          cmd_update;;
+    install-service) cmd_install_service;;
+    uninstall)       cmd_uninstall;;
+    config)          shift; cmd_config "$@";;
+    help|--help|-h|"")
+        cat <<EOF
+mark-dawn — Apple Container edition (macOS 26+)
+
+Usage: mark-dawn {command} [options]
+
+Commands:
+  start                Start background watcher
+  stop                 Stop background watcher
+  restart              Restart watcher
+  convert FILE [--docx]  Convert single file
+  logs                 Follow container logs
+  status               Show container and directory status
+  update               Pull latest image and restart
+  install-service      Install as launchd user service
+  uninstall            Remove service and stop container
+  config {show|set}    View or change configuration
+  help                 Show this help
+
+Supported formats:
+  PDF, DjVu, TIFF, JPEG, PNG, BMP, WebP → markdown (OCR via ocrmypdf)
+  DOCX, XLSX, PPTX, HTML, CSV, RTF       → markdown (via markitdown)
+  --docx flag converts markdown → DOCX  (needs pandoc)
+
+Environment:
+  MARK_DAWN_IMAGE       Container image (default: docker.io/kirijin/mark-dawn:latest)
+  MARK_DAWN_DATA_DIR    Data directory (default: ~/Documents)
+  MARK_DAWN_LANGS       OCR languages (default: eng+rus+fra+deu+chi_sim+jpn)
+EOF
+        ;;
+esac

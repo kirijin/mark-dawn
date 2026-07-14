@@ -1,0 +1,272 @@
+#!/bin/bash
+# ============================================================================
+# mark-dawn macOS launcher — Homebrew + Python venv (pre-macOS 26)
+# Installed by install-macos-brew.sh
+# ============================================================================
+set -euo pipefail
+
+INSTALL_DIR="${MARK_DAWN_INSTALL_DIR:-/opt/mark-dawn}"
+VENV_DIR="$INSTALL_DIR/venv"
+CONVERTER="$VENV_DIR/bin/convert_pdf.py"
+WATCHER="$VENV_DIR/bin/watcher.py"
+LOG_DIR="$HOME/Library/Logs/mark-dawn"
+LOG_FILE="$LOG_DIR/watcher.log"
+CONFIG_DIR="$HOME/Library/Application Support/mark-dawn"
+CONFIG_FILE="$CONFIG_DIR/config"
+PID_FILE="/tmp/mark-dawn-watcher.pid"
+PLIST_PATH="$HOME/Library/LaunchAgents/com.mark-dawn.watcher.plist"
+
+# Defaults
+DATA_DIR="${MARK_DAWN_DATA_DIR:-$HOME/Documents}"
+LANGS="${MARK_DAWN_LANGS:-eng+rus+fra+deu+chi_sim+jpn}"
+
+mkdir -p "$LOG_DIR" "$CONFIG_DIR"
+
+# --- Config ---------------------------------------------------------------
+load_config() {
+    [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+    DATA_DIR="${MARK_DAWN_DATA_DIR:-${data_dir:-$DATA_DIR}}"
+    LANGS="${MARK_DAWN_LANGS:-${langs:-$LANGS}}"
+}
+
+save_config() {
+    cat > "$CONFIG_FILE" <<EOF
+# mark-dawn configuration — generated $(date)
+data_dir="$DATA_DIR"
+langs="$LANGS"
+EOF
+    chmod 600 "$CONFIG_FILE"
+}
+
+log()   { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
+err()   { echo "$*" >&2; }
+
+ensure_dirs() {
+    mkdir -p "$DATA_DIR/Inbox" "$DATA_DIR/Research" "$DATA_DIR/Inbox_Failed" \
+             "$DATA_DIR/Inbox/2md" "$DATA_DIR/Inbox/2docx"
+    [[ ! -L "$DATA_DIR/Research/Inbox" ]] && ln -sfn "$DATA_DIR/Inbox" "$DATA_DIR/Research/Inbox" 2>/dev/null || true
+}
+
+# --- Commands -------------------------------------------------------------
+cmd_start() {
+    ensure_dirs
+    if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        log "Watcher already running (PID $(cat "$PID_FILE"))"
+        exit 0
+    fi
+    log "Starting mark-dawn watcher..."
+    nohup "$WATCHER" >> "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+    sleep 1
+    if kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        log "OK Watcher started (PID $(cat "$PID_FILE"))"
+        echo "   Inbox:    $DATA_DIR/Inbox"
+        echo "   Research: $DATA_DIR/Research"
+        echo "   Logs:     $LOG_FILE"
+    else
+        err "Failed to start watcher"
+        exit 1
+    fi
+}
+
+cmd_stop() {
+    if [[ ! -f "$PID_FILE" ]]; then
+        log "No PID file — watcher not running (or crashed)"
+        return
+    fi
+    pid=$(cat "$PID_FILE")
+    log "Stopping watcher (PID $pid)..."
+    kill "$pid" 2>/dev/null || true
+    for i in 1 2 3 4 5; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null || true
+    rm -f "$PID_FILE"
+    log "OK Stopped"
+}
+
+cmd_restart() {
+    cmd_stop
+    sleep 1
+    cmd_start
+}
+
+cmd_convert() {
+    [[ $# -eq 0 ]] && { echo "Usage: mark-dawn convert FILE [--docx]"; exit 1; }
+    file_path=$(realpath "$1")
+    [[ ! -f "$file_path" ]] && { err "File not found: $1"; exit 1; }
+    shift
+    want_docx=""
+    for a in "$@"; do [[ "$a" == "--docx" ]] && want_docx="--docx"; done
+    ensure_dirs 2>/dev/null || true
+    export MARK_DAWN_LANGS="$LANGS"
+    "$CONVERTER" "$file_path" $want_docx
+}
+
+cmd_logs() {
+    if [[ ! -f "$LOG_FILE" ]]; then
+        echo "No log file yet."
+        exit 0
+    fi
+    tail -f "$LOG_FILE"
+}
+
+cmd_status() {
+    echo "Install:   $INSTALL_DIR"
+    echo "Data:      $DATA_DIR"
+    echo "Config:    $CONFIG_FILE"
+    echo "Log:       $LOG_FILE"
+    echo "Languages: $LANGS"
+    echo ""
+    if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo "Watcher:   RUNNING (PID $(cat "$PID_FILE"))"
+    else
+        echo "Watcher:   STOPPED"
+    fi
+    echo ""
+    echo "Inbox contents:"
+    ls -1 "$DATA_DIR/Inbox" 2>/dev/null | head -10 || echo "  (empty)"
+    echo "Research contents:"
+    ls -1 "$DATA_DIR/Research" 2>/dev/null | head -10 || echo "  (empty)"
+}
+
+cmd_update() {
+    log "Updating mark-dawn packages..."
+    "$VENV_DIR/bin/pip" install --upgrade pip 2>/dev/null || true
+    "$VENV_DIR/bin/pip" install --upgrade \
+        pymupdf4llm markitdown[all] watchdog python-docx openpyxl python-pptx 2>&1 | tee -a "$LOG_FILE"
+    log "OK Packages updated"
+    cmd_restart
+}
+
+cmd_install_service() {
+    ensure_dirs
+    mkdir -p "$(dirname "$PLIST_PATH")"
+    # Generate plist from template with real paths substituted
+    /usr/libexec/PlistBuddy -c "Clear dict" "$PLIST_PATH" 2>/dev/null || true
+    cat > "$PLIST_PATH" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mark-dawn.watcher</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${WATCHER}</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>MARK_DAWN_INBOX_DIR</key>
+        <string>${DATA_DIR}/Inbox</string>
+        <key>MARK_DAWN_OUT_DIR</key>
+        <string>${DATA_DIR}/Research</string>
+        <key>MARK_DAWN_FAILED_DIR</key>
+        <string>${DATA_DIR}/Inbox_Failed</string>
+        <key>MARK_DAWN_CONVERTER</key>
+        <string>${CONVERTER}</string>
+        <key>MARK_DAWN_LANGS</key>
+        <string>${LANGS}</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${LOG_FILE}</string>
+    <key>StandardErrorPath</key>
+    <string>${LOG_FILE}</string>
+</dict>
+</plist>
+PLIST
+    chmod 644 "$PLIST_PATH"
+    launchctl load "$PLIST_PATH" 2>/dev/null || true
+    log "OK Launchd service installed and loaded"
+    echo "   Manage: launchctl start|stop|unload com.mark-dawn.watcher"
+}
+
+cmd_uninstall() {
+    # Unload launchd service
+    if [[ -f "$PLIST_PATH" ]]; then
+        launchctl unload "$PLIST_PATH" 2>/dev/null || true
+        rm -f "$PLIST_PATH"
+    fi
+    cmd_stop
+    log "OK Uninstalled. Data preserved at $DATA_DIR"
+    echo "   To fully remove: rm -rf $INSTALL_DIR"
+}
+
+cmd_config() {
+    case "${1:-show}" in
+        show)
+            echo "Current config:"
+            echo "  data_dir: $DATA_DIR"
+            echo "  langs:    $LANGS"
+            echo "  config:   $CONFIG_FILE"
+            ;;
+        set)
+            shift
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --data-dir) DATA_DIR="$2"; shift 2;;
+                    --langs) LANGS="$2"; shift 2;;
+                    *) err "Unknown config key: $1"; exit 1;;
+                esac
+            done
+            save_config
+            log "OK Config saved"
+            cmd_config show
+            ;;
+        *) err "Usage: mark-dawn config {show|set [--data-dir X] [--langs X]}"; exit 1;;
+    esac
+}
+
+# --- Main -----------------------------------------------------------------
+load_config
+
+case "${1:-}" in
+    start)           shift; cmd_start "$@";;
+    stop)            cmd_stop;;
+    restart)         cmd_restart;;
+    convert)         shift; cmd_convert "$@";;
+    logs)            cmd_logs;;
+    status)          cmd_status;;
+    update)          cmd_update;;
+    install-service) cmd_install_service;;
+    uninstall)       cmd_uninstall;;
+    config)          shift; cmd_config "$@";;
+    help|--help|-h|"")
+        cat <<EOF
+mark-dawn — macOS Homebrew edition (pre-macOS 26)
+
+Usage: mark-dawn {command} [options]
+
+Commands:
+  start                Start background watcher
+  stop                 Stop background watcher
+  restart              Restart watcher
+  convert FILE [--docx]  Convert single file
+  logs                 Follow watcher logs
+  status               Show watcher + directory status
+  update               Update Python packages and restart
+  install-service      Install as launchd user service
+  uninstall            Remove service and stop watcher
+  config {show|set}    View or change configuration
+  help                 Show this help
+
+Supported formats:
+  PDF, DjVu, TIFF, JPEG, PNG, BMP, WebP → markdown (OCR via ocrmypdf)
+  DOCX, XLSX, PPTX, HTML, CSV, RTF       → markdown (via markitdown)
+  --docx flag converts markdown → DOCX  (needs pandoc)
+
+Environment:
+  MARK_DAWN_DATA_DIR    Data directory (default: ~/Documents)
+  MARK_DAWN_LANGS       OCR languages (default: eng+rus+fra+deu+chi_sim+jpn)
+  MARK_DAWN_INSTALL_DIR Installation directory (default: /opt/mark-dawn)
+EOF
+        ;;
+esac

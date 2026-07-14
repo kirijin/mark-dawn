@@ -1,6 +1,7 @@
 FROM docker.io/jbarlow83/ocrmypdf:v17
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    pandoc \
     tesseract-ocr-eng \
     tesseract-ocr-rus \
     tesseract-ocr-fra \
@@ -19,9 +20,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pymupdf4llm \
     "markitdown[all]" \
     watchdog \
-    ocrmypdf
+    ocrmypdf \
+    python-docx
 
 COPY convert_pdf.py /usr/local/bin/
+COPY docx_styler.py /usr/local/bin/
 COPY watcher.py /usr/local/bin/
 COPY entrypoint.sh /usr/local/bin/
 
