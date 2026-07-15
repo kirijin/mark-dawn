@@ -38,18 +38,14 @@ def _ocr_pdf(pdf_path, out_md):
             "-j", "1", "--output-type", "pdf",
             str(pdf_path), str(ocr_out),
         ], capture_output=True, text=True, timeout=600, check=True)
-        import pymupdf4llm
         md = pymupdf4llm.to_markdown(str(ocr_out))
         out_md.write_text(md, encoding="utf-8")
         print("OCR complete. Converting to Markdown...")
 
 def _md_to_docx(md_path):
     """Build high-quality docx from markdown via python-docx (or pandoc fallback)."""
+    from docx_styler import HAS_PYDOCX
     docx = md_path.with_suffix(".docx")
-    try:
-        from docx_styler import HAS_PYDOCX
-    except ImportError:
-        HAS_PYDOCX = False
 
     if HAS_PYDOCX:
         md_text = md_path.read_text(encoding="utf-8")
@@ -65,34 +61,35 @@ def _md_to_docx(md_path):
 def _handle_pdf(file_path, out_md):
     avg, n = _pdf_text_ratio(file_path)
     if avg > 100:
-        import pymupdf4llm
         md = pymupdf4llm.to_markdown(str(file_path))
         out_md.write_text(md, encoding="utf-8")
         print(f"Digital PDF ({int(avg)} chars/page). Converting via pymupdf4llm...")
         return
 
-    print(f"Scanned PDF ({int(avg)} chars/page). Rendering pages as images for better OCR...")
+    print(f"Scanned PDF ({int(avg)} chars/page). Rendering pages for OCR...")
     doc = fitz.open(str(file_path))
-    images = []
+    ppi = 200
+    zoom = ppi / 72
+    out_doc = fitz.open()
     for i in range(min(n, MAX_PAGES)):
-        zoom = 200 / 72
         pix = doc[i].get_pixmap(matrix=fitz.Matrix(zoom, zoom))
-        img = PImage.frombuffer("RGB", [pix.width, pix.height], pix.samples)
-        w, h = img.size
+        w, h = pix.width, pix.height
         if w > MAX_DIM or h > MAX_DIM:
             s = min(MAX_DIM / w, MAX_DIM / h)
-            img = img.resize((int(w * s), int(h * s)), PImage.LANCZOS)
-        img.info["dpi"] = (200, 200)
-        images.append(img)
+            pix = doc[i].get_pixmap(matrix=fitz.Matrix(zoom * s, zoom * s))
+        sr = doc[i].rect  # source page rect in points
+        page = out_doc.new_page(width=sr.width, height=sr.height)
+        page.insert_image(page.rect, pixmap=pix)
     doc.close()
-    if not images:
+    rendered = len(out_doc)
+    if rendered == 0:
         _ocr_pdf(file_path, out_md)
         return
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
         tmp_pdf = Path(f.name)
-    images[0].save(str(tmp_pdf), save_all=True,
-                   append_images=images[1:], format="PDF")
-    print(f"  Rendered {len(images)} page(s) via fitz rasterization")
+    out_doc.save(str(tmp_pdf), garbage=4, deflate=True)
+    out_doc.close()
+    print(f"  Rendered {rendered} page(s) via fitz rasterization")
     _ocr_pdf(tmp_pdf, out_md)
     tmp_pdf.unlink(missing_ok=True)
 

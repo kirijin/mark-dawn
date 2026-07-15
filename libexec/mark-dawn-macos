@@ -135,6 +135,9 @@ cmd_status() {
 
 cmd_update() {
     log "Updating mark-dawn packages..."
+    echo "Packages with newer versions available:"
+    "$VENV_DIR/bin/pip" list --outdated 2>/dev/null | tail -n +3 || true
+    echo ""
     "$VENV_DIR/bin/pip" install --upgrade pip 2>/dev/null || true
     "$VENV_DIR/bin/pip" install --upgrade \
         pymupdf4llm markitdown[all] watchdog python-docx openpyxl python-pptx 2>&1 | tee -a "$LOG_FILE"

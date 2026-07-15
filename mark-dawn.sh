@@ -281,7 +281,7 @@ mark-dawn — Universal Document → Markdown/DOCX Pipeline (Linux)
 Usage: $0 {command} [options]
 
 Commands:
-  start [2md|2docx]   Start background watcher
+  start               Start background watcher
   stop                Stop background watcher
   restart             Restart watcher
   convert FILE [--docx]  Convert single file (optionally to docx)

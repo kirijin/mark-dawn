@@ -15,13 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python3 -m venv /opt/markdawn
 ENV PATH="/opt/markdawn/bin:$PATH"
 
+COPY requirements.txt /tmp/
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir \
-    pymupdf4llm \
-    "markitdown[all]" \
-    watchdog \
-    ocrmypdf \
-    python-docx
+    pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY convert_pdf.py /usr/local/bin/
 COPY docx_styler.py /usr/local/bin/

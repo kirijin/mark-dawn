@@ -1,0 +1,9 @@
+# mark-dawn pinned dependencies
+# Generated from PyPI — update via: pip freeze > requirements.txt
+# Security: run `mark-dawn update` for latest CVEs in a running install
+
+pymupdf4llm==1.28.0
+markitdown[all]==0.1.6
+watchdog==6.0.0
+ocrmypdf==17.8.0
+python-docx==1.2.0
