@@ -11,6 +11,6 @@ mkdir -p /data/Inbox /data/Research /data/Inbox_Failed
 
 case "${1:-}" in
   watcher) exec python /usr/local/bin/watcher.py ;;
-  convert) shift; exec python /usr/local/bin/convert_pdf.py "$1" ;;
+  convert) shift; exec python /usr/local/bin/convert_pdf.py "$@" ;;
   *) exec "$@" ;;
 esac

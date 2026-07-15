@@ -74,7 +74,8 @@ mark-dawn convert scan.djvu --docx   # Convert to DOCX
 mark-dawn logs                  # Follow watcher logs (Ctrl+C to exit)
 mark-dawn status                # Show runtime state + directory contents
 mark-dawn update                # Pull latest image / update Python packages
-mark-dawn install-service       # Install as launchd (macOS) / systemd (Linux)
+mark-dawn menu                  # Interactive numbered menu (Linux)
+mark-dawn install-service      # Install as launchd (macOS) / `install-systemd` (Linux)
 mark-dawn help                  # Full command reference
 ```
 
@@ -93,13 +94,13 @@ mark-dawn help                  # Full command reference
 ```
 ~/Documents/
 ├── Inbox/            ─── drop files here
-│   ├── 2md/              → always converted to .md
+│   ├── 2md/              → same default output as Inbox (functionally equivalent)
 │   └── 2docx/            → always converted to .docx
 ├── Research/          ← converted files appear here
 └── Inbox_Failed/      ← files that failed conversion
 ```
 
-1. You drop a file into `Inbox/` (or `Inbox/2docx/`)
+1. You drop a file into `Inbox/` (or `Inbox/2docx/` — or `Inbox/2md/` for explicit MD routing)
 2. Watcher detects it after 3s debounce (avoids mid-copy triggers)
 3. File type is identified by extension:
 
@@ -166,7 +167,7 @@ All via environment variables:
 | `MARK_DAWN_MAX_DIM` | `2400` | Max image dimension (px) |
 | `MARK_DAWN_IMAGE` | `docker.io/kirijin/mark-dawn:latest` | Container image (Linux / macOS 26+) |
 | `MARK_DAWN_INSTALL_DIR` | `/opt/mark-dawn` | macOS brew+venv home |
-| `MARK_DAWN_CONVERTER` | auto-detected | Path to convert_pdf.py |
+| `MARK_DAWN_CONVERTER` | platform path | Container: `/usr/local/bin/convert_pdf.py`; macOS brew: `$VENV_DIR/bin/convert_pdf.py` |
 
 Also settable via `mark-dawn config set --data-dir ~/Docs --langs eng+spa`.
 
@@ -229,6 +230,7 @@ mark-dawn/
 ├── install-macos-brew.sh          # macOS pre-26 installer (Homebrew + venv)
 ├── mark-dawn.sh                   # Linux container launcher (also macOS guard)
 ├── install.ps1                    # Windows installer
+├── mark-dawn.ps1                  # Windows launcher
 │
 ├── convert_pdf.py                 # Core converter — PDF/DjVu/image → markdown
 ├── watcher.py                     # Folder watcher (watchdog-based)
@@ -278,6 +280,49 @@ python3 watcher.py                      # starts the watcher
 | **Root/sudo** | no | no | no | no |
 | **OCR languages** | 6 (extensible) | 6 | 6 | 25 (full tessdata) |
 | **Maturity** | ✅ stable | 🆕 fresh | 🆕 fresh | ⚠️ works but rough |
+
+---
+
+## Troubleshooting
+
+### Container won't start (Linux)
+
+Ensure podman/docker is installed and running:
+```bash
+podman info  # should show system info, not errors
+```
+If SELinux blocks volume mounts, the `:Z` flag in the launcher handles it. For rootless podman, verify `~/.local/share/containers/` is on a filesystem with sufficient space.
+
+### OCR is inaccurate or missing languages
+
+Default languages are `eng+rus+fra+deu+chi_sim+jpn`. To add more:
+```bash
+mark-dawn config set --langs eng+spa+ara+por
+mark-dawn restart
+```
+For macOS brew+venv, also install the Tesseract language pack:
+```bash
+brew install tesseract-lang
+```
+
+### `--docx` flag ignored
+
+This was a bug in `entrypoint.sh` that dropped extra arguments to `convert` — fixed in the current source. If your image predates the fix, rebuild or pull the latest:
+```bash
+mark-dawn update
+```
+
+### macOS: Apple Container image won't start
+
+Ensure your architecture matches:
+```bash
+container run --rm --arch linux/arm64 docker.io/kirijin/mark-dawn:latest uname -m
+```
+Apple Silicon → `arm64`, Intel → `amd64`.
+
+### Windows: portable Python DLL errors
+
+The installer handles `os.add_dll_directory()` for MSYS2 binaries. If you see DLL load errors, run `.\mark-dawn.ps1 --force` to re-extract dependencies.
 
 ---
 
