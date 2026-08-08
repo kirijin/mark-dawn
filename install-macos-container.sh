@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
+# SPDX-License-Identifier: MIT
 # ============================================================================
 # mark-dawn macOS installer — Apple Container (macOS 26+)
 # ============================================================================

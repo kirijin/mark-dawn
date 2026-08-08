@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
+# SPDX-License-Identifier: MIT
 # ============================================================================
 # mark-dawn one-command installer — Linux + macOS
 # Usage:  curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.sh | bash

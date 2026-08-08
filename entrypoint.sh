@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
+# SPDX-License-Identifier: MIT
 set -e
 
 # Guarantee a writable temp directory for Ghostscript/Tesseract

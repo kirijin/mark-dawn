@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
+# SPDX-License-Identifier: MIT
 set -euo pipefail
 [[ -n "${MARK_DAWN_DEBUG:-}" ]] && set -x
 

@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com> -->
+<!-- SPDX-License-Identifier: MIT -->
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/kirijin/mark-dawn/main/logo.png" width="200">
 </p>

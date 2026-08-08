@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
+# SPDX-License-Identifier: MIT
 """mark-dawn converter — PDF, DjVu, images → markdown (or docx)."""
 import sys, os, subprocess, tempfile, shutil
 from pathlib import Path

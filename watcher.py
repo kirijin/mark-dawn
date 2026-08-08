@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
+# SPDX-License-Identifier: MIT
 """mark-dawn watcher — monitors Inbox for new files, converts automatically."""
 import time, subprocess, sys, os
 from pathlib import Path

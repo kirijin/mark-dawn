@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
+# SPDX-License-Identifier: MIT
+
 FROM docker.io/jbarlow83/ocrmypdf:v17
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

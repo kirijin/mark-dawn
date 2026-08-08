@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
+# SPDX-License-Identifier: MIT
 """Tests for convert_pdf.py — dispatch logic, OCR, format routing."""
 import sys, os, subprocess
 from pathlib import Path

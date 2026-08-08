@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
+# SPDX-License-Identifier: MIT
 """Build a high-quality .docx from markdown text.
 
 Uses python-docx for programmatic control — fonts, spacing, styles,
