@@ -122,6 +122,8 @@ def _parse_output_name(stdout):
 
 
 def _convert(path):
+    """Convert one file. Returns Path on success, 'busy' when the lock is held
+    elsewhere (retryable, never a failure), None on real failure."""
     args = [sys.executable, str(CONVERT), str(path)]
     if path.parent.name.lower() == "2docx":
         args.append("--docx")
@@ -137,7 +139,7 @@ def _convert(path):
 
     if result.returncode == 2:
         log(f"Busy (lock held), will retry: {path.name}")
-        return None  # retryable, not a failure
+        return "busy"  # retryable — NOT a failure, never counts toward Failed
 
     if result.returncode != 0:
         tail = (result.stderr or "").strip().splitlines()
@@ -166,10 +168,12 @@ def _move_failed(path):
 
 
 def process_file(path):
-    out = _convert(path)
-    if out is not None:
-        log(f"OK: {path.name} -> {out.name}")
-        _note_result(path.name, "ok", out.name)
+    result = _convert(path)
+    if isinstance(result, str):  # "busy" sentinel — lock held elsewhere
+        return "busy"
+    if isinstance(result, Path):
+        log(f"OK: {path.name} -> {result.name}")
+        _note_result(path.name, "ok", result.name)
         return True
     return False
 
@@ -188,7 +192,15 @@ def _process_pending(now):
             continue
         _pending.pop(p, None)
         handled += 1
-        if process_file(p):
+        result = process_file(p)
+        if result is True:
+            continue
+        if isinstance(result, str):  # "busy" — lock held, not a failure
+            # Another conversion holds the lock for this stem — the file is
+            # fine, so it never counts toward the Failed move. Reschedule
+            # without touching the attempt counter.
+            info["ready_at"] = now + RETRY_DELAY
+            _pending[p] = info
             continue
         info["attempts"] += 1
         if info["attempts"] < MAX_ATTEMPTS:

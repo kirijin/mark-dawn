@@ -53,7 +53,6 @@ err() { echo "$*" >&2; }
 ensure_dirs() {
     mkdir -p "$DATA_DIR/Inbox" "$DATA_DIR/Research" "$DATA_DIR/Inbox_Failed" \
              "$DATA_DIR/Inbox/2md" "$DATA_DIR/Inbox/2docx"
-    [[ ! -L "$DATA_DIR/Research/Inbox" ]] && ln -sfn "$DATA_DIR/Inbox" "$DATA_DIR/Research/Inbox" 2>/dev/null || true
 }
 
 # Volume mount args

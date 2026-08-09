@@ -114,7 +114,7 @@ class TestConvert:
         p = self._mk("busy.pdf")
         with mock.patch.object(watcher.subprocess, "run") as run:
             run.return_value = mock.MagicMock(returncode=2, stdout="", stderr="busy")
-            assert watcher._convert(p) is None
+            assert watcher._convert(p) == "busy"  # sentinel, not a failure
         assert p.exists()  # not moved, not deleted
 
     def test_failure(self):
@@ -152,6 +152,23 @@ class TestProcessPending:
         with mock.patch.object(watcher, "process_file") as pf:
             watcher._process_pending(time.time())
         pf.assert_not_called()
+
+    def test_busy_never_counts_toward_failed(self):
+        """A lock collision is not a failure: no attempt increment, no Failed
+        move, no matter how many times it stays busy."""
+        p = watcher.INBOX / "busy2.pdf"
+        p.touch()
+        watcher._pending[p] = {"seen": 0, "attempts": 0, "ready_at": 0}
+        with (
+            mock.patch.object(watcher, "_stable_size", return_value=True),
+            mock.patch.object(watcher, "process_file", return_value="busy"),
+            mock.patch.object(watcher, "_move_failed") as mf,
+        ):
+            for i in range(10):
+                watcher._process_pending(time.time() + 1000 * (i + 1))
+        assert mf.call_count == 0
+        assert p in watcher._pending
+        assert watcher._pending[p]["attempts"] == 0
 
     def test_failure_retries_then_failed(self):
         p = watcher.INBOX / "r.pdf"

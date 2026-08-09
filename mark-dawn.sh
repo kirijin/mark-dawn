@@ -99,16 +99,21 @@ pull_image() {
 ensure_dirs() {
     mkdir -p "$DATA_DIR/Inbox" "$DATA_DIR/Research" "$DATA_DIR/Inbox_Failed" \
              "$DATA_DIR/Inbox/2md" "$DATA_DIR/Inbox/2docx"
-    [[ ! -L "$DATA_DIR/Research/Inbox" ]] && ln -sfn "$DATA_DIR/Inbox" "$DATA_DIR/Research/Inbox" 2>/dev/null || true
 }
 
 # --- Commands -----------------------------------------------------------------
 cmd_start() {
     ensure_dirs
     # Don't double-start: neither a manual container nor the systemd service.
-    if $RUNTIME ps --filter name=mark-dawn --format "{{.Names}}" 2>/dev/null | grep -qx "mark-dawn"; then
-        log "Watcher already running"
-        exit 0
+    # `ps -a` catches a stopped/stale container too (plain `ps` only lists
+    # running ones, and `run --name` would then fail on the name conflict).
+    if $RUNTIME ps -a --filter name=^mark-dawn$ --format "{{.Names}}" 2>/dev/null | grep -qx "mark-dawn"; then
+        if $RUNTIME ps --filter name=^mark-dawn$ --format "{{.Names}}" 2>/dev/null | grep -qx "mark-dawn"; then
+            log "Watcher already running"
+            exit 0
+        fi
+        log "Removing stale mark-dawn container (exists but not running)"
+        $RUNTIME rm mark-dawn 2>/dev/null || true
     fi
     if command -v systemctl &>/dev/null && systemctl --user is-active --quiet mark-dawn.service 2>/dev/null; then
         log "Watcher already running as the mark-dawn systemd service"
