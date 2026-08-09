@@ -79,7 +79,7 @@ jobs:
             $errors = $null
             $null = [System.Management.Automation.Language.Parser]::ParseInput($content, [ref]$null, [ref]$errors)
             if ($errors.Count -gt 0) {
-              Write-Host "❌ PowerShell syntax error(s) in $f:"
+              Write-Host "❌ PowerShell syntax error(s) in ${f}:"
               $errors | ForEach-Object { Write-Host "  $($_.Message) @ line $($_.Extent.StartLineNumber)" }
               exit 1
             }
