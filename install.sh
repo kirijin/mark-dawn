@@ -24,7 +24,7 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mark-dawn"
 CONFIG_FILE="${CONFIG_DIR}/config"
 STATE_FILE="${CONFIG_DIR}/.install-state.json"
 DEFAULT_LANGS="eng+rus"
-VERSION="1.0.0"
+VERSION="2.3.0"
 
 # --- Parse arguments ---------------------------------------------------------
 ARG_LANGS=""
@@ -84,7 +84,6 @@ load_state() {
     if [[ -f "$STATE_FILE" ]]; then
         STATE_LANGS=$(sed -n 's/.*"langs": *"\([^"]*\)".*/\1/p' "$STATE_FILE" 2>/dev/null || echo "")
         STATE_VERSION=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$STATE_FILE" 2>/dev/null || echo "")
-        STATE_DATA_DIR=$(sed -n 's/.*"data_dir": *"\([^"]*\)".*/\1/p' "$STATE_FILE" 2>/dev/null || echo "")
     fi
 }
 
@@ -256,7 +255,7 @@ ok "Config saved"
 # --- [5/5] Add to PATH -------------------------------------------------------
 step "5/5" "Adding ${INSTALL_DIR} to PATH..."
 
-EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
+EXPORT_LINE="export PATH=\"$INSTALL_DIR:\$PATH\""
 
 case ":$PATH:" in
     *":$INSTALL_DIR:"*)
@@ -294,6 +293,12 @@ command -v "$RUNTIME" >/dev/null 2>&1 && ok "Runtime: $RUNTIME" || { warn "Runti
 [[ -f "$CONFIG_FILE" ]] && ok "Config present" || { warn "Config missing"; VERIFY_FAIL=1; }
 [[ -d "$DATA_DIR/Inbox" ]] && ok "Inbox directory" || { warn "Inbox missing"; VERIFY_FAIL=1; }
 [[ -d "$DATA_DIR/Research" ]] && ok "Research directory" || { warn "Research missing"; VERIFY_FAIL=1; }
+
+# Make verification failures real: the checks above only warn, so a broken
+# install must still abort here rather than print a success banner.
+if [[ "$VERIFY_FAIL" -gt 0 ]]; then
+    fail "Installation verification failed (see warnings above)"
+fi
 
 # --- Done --------------------------------------------------------------------
 printf "\n${C_GREEN}${C_BOLD}=== mark-dawn installed ===${C_RESET}\n\n"

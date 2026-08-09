@@ -18,7 +18,7 @@
 | Linux | ✅ stable | `curl ... install.sh \| bash` | Podman/Docker container |
 | macOS 26+ | ✅ new | `curl ... install-macos-container.sh \| bash` | Apple Container (native, ~51 MB idle) |
 | macOS pre-26 | ✅ new | `curl ... install.sh \| bash` | Homebrew + Python venv (no VM) |
-| Windows | ❌ works but rough | PowerShell | MSYS2 portable (no admin) |
+| Windows | ⚠️ works (portable; recent fixes unverified on hardware) | PowerShell | MSYS2 portable (no admin) |
 
 ---
 
@@ -44,7 +44,7 @@ curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.sh |
 ```
 The universal installer auto-detects your macOS version. Pre-26 → runs the Homebrew path:
 1. `brew install ocrmypdf tesseract-lang djvulibre pandoc`
-2. Creates `/opt/mark-dawn/venv/` with full tool stack
+2. Creates `~/Library/Application Support/mark-dawn/venv/` with full tool stack
 3. Deploys the native launcher to `~/.local/bin/`
 Zero container overhead — pure native Unix processes.
 
@@ -142,7 +142,7 @@ graph LR
 `convert_pdf.py` opens a PDF with MuPDF, measures average text chars/page:
 - **>100 chars/page** → digital. Direct pymupdf4llm conversion (fast, clean)
 - **≤100 chars/page** → scanned. Renders each page at 200 DPI, feeds to ocrmypdf, then pymupdf4llm
-- **Max pages**: 50 (configurable via `MARK_DAWN_MAX_PAGES`)
+- **Scanned render capped at 50 pages** (configurable via `MARK_DAWN_MAX_PAGES`)
 - **Max dimension**: 2400px (configurable via `MARK_DAWN_MAX_DIM`)
 
 ### Languages
@@ -169,7 +169,7 @@ All via environment variables:
 | `MARK_DAWN_MAX_PAGES` | `50` | Max PDF pages to process |
 | `MARK_DAWN_MAX_DIM` | `2400` | Max image dimension (px) |
 | `MARK_DAWN_IMAGE` | `docker.io/kirijin/mark-dawn:latest` | Container image (Linux / macOS 26+) |
-| `MARK_DAWN_INSTALL_DIR` | `/opt/mark-dawn` | macOS brew+venv home |
+| `MARK_DAWN_INSTALL_DIR` | `~/Library/Application Support/mark-dawn` | macOS brew+venv home |
 | `MARK_DAWN_CONVERTER` | platform path | Container: `/usr/local/bin/convert_pdf.py`; macOS brew: `$VENV_DIR/bin/convert_pdf.py` |
 
 Also settable via `mark-dawn config set --data-dir ~/Docs --langs eng+spa`.
@@ -205,7 +205,7 @@ mark-dawn start
 
 ```
 mark-dawn start
-  → /opt/mark-dawn/venv/bin/watcher.py
+  → ~/Library/Application Support/mark-dawn/venv/bin/watcher.py
 ```
 - **Runtime**: Native macOS processes — no VM, no container tax
 - **System deps**: ocrmypdf, tesseract-lang, djvulibre, pandoc (installed via brew)
@@ -232,8 +232,8 @@ mark-dawn/
 ├── install-macos-container.sh     # macOS 26+ installer (Apple Container)
 ├── install-macos-brew.sh          # macOS pre-26 installer (Homebrew + venv)
 ├── mark-dawn.sh                   # Linux container launcher (also macOS guard)
-├── install.ps1                    # Windows installer
-├── mark-dawn.ps1                  # Windows launcher
+├── install.ps1                    # Windows compat shim → mark-dawn.ps1
+├── mark-dawn.ps1                  # Windows installer (the real one)
 │
 ├── convert_pdf.py                 # Core converter — PDF/DjVu/image → markdown
 ├── watcher.py                     # Folder watcher (watchdog-based)
@@ -282,7 +282,7 @@ python3 watcher.py                      # starts the watcher
 | **Image/stack** | Docker Hub | Docker Hub | brew + pip | embedded |
 | **Root/sudo** | no | no | no | no |
 | **OCR languages** | 6 (extensible) | 6 | 6 | 25 (full tessdata) |
-| **Maturity** | ✅ stable | 🆕 fresh | 🆕 fresh | ⚠️ works but rough |
+| **Maturity** | ✅ stable | 🆕 fresh | 🆕 fresh | ⚠️ works (recent fixes unverified) |
 
 ---
 
@@ -325,7 +325,7 @@ Apple Silicon → `arm64`, Intel → `amd64`.
 
 ### Windows: portable Python DLL errors
 
-The installer handles `os.add_dll_directory()` for MSYS2 binaries. If you see DLL load errors, run `.\mark-dawn.ps1 --force` to re-extract dependencies.
+The installer handles `os.add_dll_directory()` for MSYS2 binaries. If you see DLL load errors, run `.\mark-dawn.ps1 -ForceRedownload` to re-extract dependencies.
 
 ---
 

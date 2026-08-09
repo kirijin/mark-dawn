@@ -29,20 +29,27 @@ LINE_SP  = 1.15
 HEADING_FONTS = {"Heading 1": 18, "Heading 2": 15, "Heading 3": 13}
 
 def markdown_to_docx(md_text: str, output_path: str | Path,
-                      title: str = "Converted Document") -> Path:
-    """Main entry: parse markdown, write high-quality docx."""
+                      title: str = "") -> Path:
+    """Main entry: parse markdown, write high-quality docx.
+
+    `title`, when non-empty, is added as a document heading before the
+    markdown body. Empty by default so converted documents don't get a
+    boilerplate heading duplicated over their real H1.
+    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    try:
-        from docx import Document
-        from docx.shared import Pt, Cm, RGBColor, Emu
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
-        from docx.oxml.ns import qn
-        from docx.oxml import OxmlElement
-    except ImportError:
+    if not HAS_PYDOCX:
         # Fallback: pandoc
         return _pandoc_fallback(md_text, output_path, title)
+
+    # Local rebindings only (imports are cached, no cost): the module-level
+    # block above is what HAS_PYDOCX reflects, so these are guaranteed bound.
+    from docx import Document
+    from docx.shared import Pt, Cm, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
 
     doc = Document()
 
@@ -211,25 +218,31 @@ def _add_paragraph(doc, text, style=None):
     return p
 
 def _add_inline_run(para, text):
-    """Parse inline markdown (**bold**, *italic*, `code`) into runs."""
-    # Tokenise: split on **, *, ` markers
-    pattern = r'(\*\*.*?\*\*|[*].*?[*]|`.*?`)'
-    parts = re.split(pattern, text)
-    for part in parts:
-        if not part:
-            continue
-        if part.startswith('**') and part.endswith('**'):
+    """Parse inline markdown (**bold**, *italic*, `code`) into runs.
+
+    Iterates actual regex matches so dispatch follows the matched alternative —
+    a literal part can't be mistaken for markup (e.g. `****` stays literal,
+    `**a*b**` is not stripped into bogus bold).
+    """
+    pattern = re.compile(r'\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*')
+    pos = 0
+    for m in pattern.finditer(text):
+        if m.start() > pos:
+            para.add_run(text[pos:m.start()])
+        part = m.group(0)
+        if part.startswith('**'):
             run = para.add_run(part[2:-2])
             run.bold = True
-        elif part.startswith('*') and part.endswith('*') and not part.startswith('**'):
-            run = para.add_run(part[1:-1])
-            run.italic = True
-        elif part.startswith('`') and part.endswith('`'):
+        elif part.startswith('`'):
             run = para.add_run(part[1:-1])
             run.font.name = 'Consolas'
             run.font.size = Pt(9)
         else:
-            para.add_run(part)
+            run = para.add_run(part[1:-1])
+            run.italic = True
+        pos = m.end()
+    if pos < len(text):
+        para.add_run(text[pos:])
 
 def _add_code_block(doc, lines):
     """Dedented code block lines as styled paragraphs."""

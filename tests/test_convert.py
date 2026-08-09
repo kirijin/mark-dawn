@@ -19,10 +19,18 @@ _fake_pil    = mock.MagicMock()
 sys.modules["fitz"]         = _fake_fitz
 sys.modules["pymupdf4llm"]  = _fake_pymu
 sys.modules["PIL"]          = _fake_pil
+# Fake docx_styler for THIS file's import of convert_pdf, then restore the
+# real module so other test files (test_docx_styler.py) get it.
+_real_docx_styler = sys.modules.get("docx_styler")
 sys.modules["docx_styler"]  = mock.MagicMock()
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import convert_pdf
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import convert_pdf
+finally:
+    if _real_docx_styler is not None:
+        sys.modules["docx_styler"] = _real_docx_styler
+    else:
+        sys.modules.pop("docx_styler", None)
 
 # Re-bind module references so our mocks behave as the module objects
 convert_pdf.fitz        = _fake_fitz
@@ -127,10 +135,10 @@ class TestOcrPdf:
             sp.run.return_value = mock.MagicMock(returncode=0)
             convert_pdf._ocr_pdf(pdf, out)
 
-            # ocrmypdf called with --skip-text
+            # ocrmypdf called with --skip-text (path may be resolved via which)
             ocr_args = sp.run.call_args.args[0]
             assert "--skip-text" in ocr_args
-            assert "ocrmypdf" == ocr_args[0]
+            assert os.path.basename(ocr_args[0]) == "ocrmypdf"
             # pymupdf4llm called on the ocr output
             assert to_md.called
             # output written
@@ -255,7 +263,7 @@ class TestHandleDjVu:
         ):
             sp.run.side_effect = [
                 mock.MagicMock(returncode=0, stdout=""),       # djvutxt (empty)
-                mock.MagicMock(returncode=0, stdout="1"),       # --pagecount
+                mock.MagicMock(returncode=0, stdout="1"),       # djvused pagecount
                 mock.MagicMock(returncode=0, stdout=""),         # ddjvu
             ]
             pil_img = mock.MagicMock()
@@ -427,3 +435,29 @@ class TestMain:
         ):
             convert_pdf.main()
         assert exc.value.code == 1
+
+    def test_busy_exit2(self):
+        """A live lock for the same stem → exit 2 (retryable), never exit 0."""
+        lock = convert_pdf.OUT_DIR / ".doc.lock"
+        lock.write_text("99999")
+        try:
+            with (
+                mock.patch.object(sys, "argv",
+                                  ["convert_pdf.py", str(self._tests_dir / "doc.pdf")]),
+                pytest.raises(SystemExit) as exc,
+            ):
+                convert_pdf.main()
+            assert exc.value.code == 2
+        finally:
+            lock.unlink(missing_ok=True)
+
+    def test_unique_output_name(self):
+        """Collision-safe naming: report.md → report (1).md when taken."""
+        existing = convert_pdf.OUT_DIR / "uniq.md"
+        existing.write_text("old", encoding="utf-8")
+        try:
+            p = convert_pdf._unique_path(convert_pdf.OUT_DIR, "uniq.md")
+            assert p.name == "uniq (1).md"
+            assert not p.exists()
+        finally:
+            existing.unlink(missing_ok=True)

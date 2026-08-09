@@ -59,7 +59,7 @@ if [[ "$MACOS_MAJOR" -ge 26 ]]; then
         fi
         chmod +x "$INSTALLER"
     fi
-    exec "$INSTALLER"
+    exec "$INSTALLER" "$@"
 else
     step "2/3" "macOS pre-26 detected — using Homebrew + Python venv path"
     echo ""
@@ -84,5 +84,5 @@ else
         fi
         chmod +x "$INSTALLER"
     fi
-    exec "$INSTALLER"
+    exec "$INSTALLER" "$@"
 fi

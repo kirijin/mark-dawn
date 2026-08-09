@@ -8,6 +8,7 @@ on:
       - '*.py'
       - '*.sh'
       - 'install.ps1'
+      - 'mark-dawn.ps1'
       - '.github/workflows/build.yml'
     tags: [ 'v*' ]
   workflow_dispatch:
@@ -26,7 +27,7 @@ env:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    name: Validate scripts and configuration
+    name: Validate scripts, tests and configuration
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -38,8 +39,18 @@ jobs:
             "Dockerfile"
             "convert_pdf.py"
             "watcher.py"
+            "docx_styler.py"
             "entrypoint.sh"
+            "install.sh"
+            "install-macos.sh"
+            "install-macos-brew.sh"
+            "install-macos-container.sh"
+            "mark-dawn.sh"
+            "libexec/mark-dawn-container"
+            "libexec/mark-dawn-macos"
             "install.ps1"
+            "mark-dawn.ps1"
+            "requirements.txt"
             "README.md"
           )
           missing=()
@@ -59,55 +70,53 @@ jobs:
           echo ""
           echo "✓ All required files present"
 
-      - name: Validate PowerShell syntax
+      - name: Validate PowerShell syntax (both installers)
         shell: pwsh
         run: |
-          Write-Host "Validating PowerShell syntax for install.ps1..."
-          $content = Get-Content -Path "install.ps1" -Raw
-          $errors = $null
-          $null = [System.Management.Automation.Language.Parser]::ParseInput($content, [ref]$null, [ref]$errors)
-          if ($errors.Count -gt 0) {
-            Write-Host "❌ PowerShell syntax error(s):"
-            $errors | ForEach-Object { Write-Host "  $($_.Message)" }
-            exit 1
+          foreach ($f in @("install.ps1", "mark-dawn.ps1")) {
+            Write-Host "Validating PowerShell syntax for $f..."
+            $content = Get-Content -Path $f -Raw
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseInput($content, [ref]$null, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              Write-Host "❌ PowerShell syntax error(s) in $f:"
+              $errors | ForEach-Object { Write-Host "  $($_.Message) @ line $($_.Extent.StartLineNumber)" }
+              exit 1
+            }
+            Write-Host "✓ $f syntax valid"
           }
-          Write-Host "✓ PowerShell syntax valid"
 
       - name: Validate Python syntax
         run: |
           echo "Validating Python syntax..."
           python3 -m py_compile convert_pdf.py
           python3 -m py_compile watcher.py
+          python3 -m py_compile docx_styler.py
           echo "✓ Python syntax valid"
 
       - name: Validate shell script syntax
         run: |
           echo "Validating shell script syntax..."
-          bash -n entrypoint.sh
+          for f in install.sh install-macos.sh install-macos-brew.sh install-macos-container.sh mark-dawn.sh entrypoint.sh libexec/mark-dawn-container libexec/mark-dawn-macos; do
+            bash -n "$f" || { echo "❌ bash -n failed: $f"; exit 1; }
+          done
           echo "✓ Shell script syntax valid"
 
-      - name: Check for common issues in install.ps1
-        shell: pwsh
+      - name: Shellcheck launchers and installers
         run: |
-          $content = Get-Content -Path "install.ps1" -Raw
-          $issues = @()
-          
-          # Check for hardcoded paths (should use variables)
-          if ($content -match '(C:\\|D:\\|E:\\)mark-dawn') {
-            $issues += "Hardcoded drive letters found - should use `$env:USERPROFILE"
-          }
-          
-          # Check for missing error handling on critical commands
-          if ($content -match 'pacman.*\|' -and $content -notmatch '\$LASTEXITCODE') {
-            $issues += "pacman commands should have explicit error checking"
-          }
-          
-          if ($issues.Count -gt 0) {
-            Write-Host "⚠ Potential issues found:"
-            $issues | ForEach-Object { Write-Host "  - $_" }
-          } else {
-            Write-Host "✓ No common issues detected"
-          }
+          echo "Running shellcheck (warning level)..."
+          shellcheck -S warning \
+            install.sh install-macos.sh install-macos-brew.sh install-macos-container.sh \
+            mark-dawn.sh entrypoint.sh libexec/mark-dawn-container libexec/mark-dawn-macos
+          echo "✓ Shellcheck clean"
+
+      - name: Run Python test suite
+        run: |
+          echo "Installing test deps (python-docx is the only real dependency tests need)..."
+          pip install pytest python-docx
+          echo "Running pytest..."
+          python3 -m pytest tests/ -q
+          echo "✓ Test suite passed"
 
   build-and-push:
     needs: validate
@@ -177,3 +186,49 @@ jobs:
           echo "✓ Docker image built and pushed successfully"
           echo "  Repository: ${{ env.DOCKERHUB_REPO }}"
           echo "  Tags: ${{ steps.meta.outputs.tags }}"
+
+  smoke:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    name: Container conversion smoke test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image for smoke test
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: mark-dawn:smoke
+          cache-from: type=gha
+          platforms: linux/amd64
+
+      - name: Smoke test — container convert lands output on the host
+        run: |
+          set -euo pipefail
+          SMOKE=$(mktemp -d)
+          mkdir -p "$SMOKE/Inbox" "$SMOKE/Research" "$SMOKE/Inbox_Failed"
+          echo "Generating fixture PDF inside the image..."
+          # insert_textbox wraps the text so the page holds >100 chars →
+          # the digital path (pymupdf4llm) runs and the .md is non-empty.
+          docker run --rm -v "$SMOKE:/smoke" mark-dawn:smoke python -c \
+            "import fitz; d=fitz.open(); p=d.new_page(); p.insert_textbox(fitz.Rect(72,72,523,700), 'Hello mark-dawn smoke test ' * 40); d.save('/smoke/Inbox/fixture.pdf')"
+          echo "Converting (env vars as the launcher passes them)..."
+          docker run --rm -v "$SMOKE:/data" \
+            -e MARK_DAWN_INBOX_DIR=/data/Inbox \
+            -e MARK_DAWN_OUT_DIR=/data/Research \
+            -e MARK_DAWN_FAILED_DIR=/data/Inbox_Failed \
+            mark-dawn:smoke convert /data/Inbox/fixture.pdf
+          if [ -s "$SMOKE/Research/fixture.md" ]; then
+            echo "SMOKE PASS: output landed on the host at $SMOKE/Research/fixture.md"
+            head -c 200 "$SMOKE/Research/fixture.md"
+            echo ""
+          else
+            echo "SMOKE FAIL: conversion ran but no output appeared on the host mount"
+            exit 1
+          fi

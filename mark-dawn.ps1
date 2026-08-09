@@ -1,4 +1,4 @@
-﻿# SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
+# SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
 # SPDX-License-Identifier: MIT
 
 <#
@@ -20,7 +20,7 @@
     SHA256-verified downloads, idempotent execution, structured logging.
 
 .NOTES
-    Version  : 2.0.0
+    Version  : 2.3.0
     Author   : kirijin
     Requires : Windows 10/11 x64, PowerShell 5.1+
 #>
@@ -61,8 +61,10 @@ $Script:PYTHON_FALLBACK_URLS = @(
 )
 
 # get-pip.py for bootstrapping pip into embedded Python
+# NOTE: get-pip.py changes with every pip release — pinning its hash would
+# break fresh installs whenever PyPA ships a new one. Size is sanity-checked
+# at download time instead.
 $Script:GETPIP_URL     = "https://bootstrap.pypa.io/get-pip.py"
-$Script:GETPIP_SHA256  = "a341e1a43e38001c551a1508a73ff23636a11970b61d901d9a1cad2a18f57055"
 $Script:GETPIP_FALLBACK_URLS = @(
     "https://bootstrap.pypa.io/get-pip.py"
     "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/get-pip.py"
@@ -169,16 +171,11 @@ $Script:TESSDATA_LANG_GROUPS = @(
 )
 $Script:TESSDATA_MIN_SIZE = 1MB
 
-# Python packages to install via pip (from PyPI win_amd64 wheels)
-$Script:PIP_PACKAGES = @(
-    "pymupdf4llm"
-    "markitdown"
-    "ocrmypdf"
-    "python-docx"
-    "openpyxl"
-    "python-pptx"
-    "watchfiles"
-)
+# Python packages are installed from the pinned requirements.txt shared with
+# the container build and the brew installer — every platform runs the same
+# versions. (watchdog, not watchfiles: the watcher is the same code everywhere.)
+$Script:REPO_URL = "https://raw.githubusercontent.com/kirijin/mark-dawn/main"
+$Script:REQUIREMENTS_URL = "$($Script:REPO_URL)/requirements.txt"
 
 # Default directories
 $Script:DEFAULT_INSTALL_DIR = [System.IO.Path]::Combine($env:LOCALAPPDATA, "mark-dawn")
@@ -201,7 +198,7 @@ $Script:_logFile        = ""
 $Script:_installLog     = ""
 $Script:_stateFile      = ""
 $Script:_pythonExe      = ""
-$Script:_installVersion = "2.2.0"
+$Script:_installVersion = "2.3.0"
 $Script:_logLevelNum    = 1  # 0=Debug 1=Info 2=Warn 3=Error
 $Script:msys2InstallerPath = ""
 $Script:_selectedMsys2Mirror = ""
@@ -822,8 +819,7 @@ function Step-DownloadGetPip {
     foreach ($url in $Script:GETPIP_FALLBACK_URLS) {
         try {
             Invoke-DownloadWithRetry -Url $url -OutFile $getPipPath `
-                -MaxRetries 2 -TimeoutSec 600 `
-                -ExpectedHash $Script:GETPIP_SHA256 -Force:$Script:ForceRedownload
+                -MaxRetries 2 -TimeoutSec 600 -Force:$Script:ForceRedownload
             $lastError = $null
             break
         } catch {
@@ -834,9 +830,13 @@ function Step-DownloadGetPip {
         }
     }
     if ($lastError) { Write-Fail "Failed to download get-pip.py: $lastError" }
+    if ((Get-Item $getPipPath -ErrorAction Stop).Length -lt 100KB) {
+        Remove-Item $getPipPath -Force -ErrorAction SilentlyContinue
+        Write-Fail "Downloaded get-pip.py looks invalid (too small) — check network/proxy."
+    }
 
     $Script:getPipPath = $getPipPath
-    Write-OK "get-pip.py ready (SHA256 verified)"
+    Write-OK "get-pip.py ready (size verified)"
     Set-InstallState -Step "getpip_downloaded" -Status "ok"
 }
 
@@ -913,15 +913,21 @@ function Step-InstallPip {
 }
 
 function Step-InstallPythonPackages {
-    Write-Step "5/15" "Installing Python packages via pip ($($Script:PIP_PACKAGES.Count) packages)..."
+    Write-Step "5/15" "Installing Python packages from pinned requirements.txt..."
 
     try {
-        $pkgList = $Script:PIP_PACKAGES -join " "
-        Write-Info "Installing: $pkgList"
+        # Download the pinned requirement set shared with the other platforms
+        $reqPath = Join-PathSafe $Script:_installDir "requirements.txt"
+        Invoke-DownloadWithRetry -Url $Script:REQUIREMENTS_URL -OutFile $reqPath `
+            -MaxRetries 2 -TimeoutSec 120
+        if ((Get-Item $reqPath -ErrorAction Stop).Length -lt 50) {
+            throw "requirements.txt download looks invalid"
+        }
+        Write-Info "Installing from pinned requirements (all platforms share this file)..."
 
-        $pipArgs = @("-m", "pip", "install", "--no-cache-dir") + $Script:PIP_PACKAGES
+        $pipArgs = @("-m", "pip", "install", "--no-cache-dir", "-r", $reqPath)
         if ($Script:_pypiMirror) {
-            $pipArgs = @("-m", "pip", "install", "--no-cache-dir", "-i", $Script:_pypiMirror) + $Script:PIP_PACKAGES
+            $pipArgs = @("-m", "pip", "install", "--no-cache-dir", "-r", $reqPath, "-i", $Script:_pypiMirror)
         }
         $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList $pipArgs -Wait -PassThru -NoNewWindow
         if ($proc.ExitCode -ne 0) {
@@ -933,7 +939,7 @@ function Step-InstallPythonPackages {
         $verifyScript = Join-PathSafe $env:TEMP "mark-dawn-verify-imports.py"
         $verifyCode = @'
 import sys, importlib
-modules = ["pymupdf4llm", "markitdown", "watchfiles"]
+modules = ["pymupdf4llm", "markitdown", "watchdog"]
 all_ok = True
 for mod in modules:
     try:
@@ -1552,36 +1558,36 @@ function Step-DownloadTessdata {
 }
 
 function Step-GenerateScripts {
-    Write-Step "12/15" "Generating Python scripts..."
+    Write-Step "12/15" "Deploying Python scripts (watcher, convert, docx_styler)..."
 
     Ensure-Directory $Script:_scriptsDir
 
-    $watcherPath = Join-PathSafe $Script:_scriptsDir "watcher.py"
-    $convertPath = Join-PathSafe $Script:_scriptsDir "convert_pdf.py"
-
     try {
-        $watcherContent = Get-WatcherScript
-        $watcherContent | Out-File -FilePath $watcherPath -Encoding utf8 -Force -ErrorAction Stop
-
-        $convertContent = Get-ConvertScript
-        # Inject selected tessdata languages into convert script
-        $langs = if ($Script:selectedTessdataLangs) { $Script:selectedTessdataLangs -join '+' } else { "eng+rus" }
-        $convertContent = $convertContent -replace '__TESSDATA_LANGS__', $langs
-        $convertContent | Out-File -FilePath $convertPath -Encoding utf8 -Force -ErrorAction Stop
+        # Download the canonical scripts — same files every other platform runs.
+        # (No more embedded copies: the watcher/converter now live in exactly
+        # one place in the repo and diverge on nothing.)
+        foreach ($script in @("watcher.py", "convert_pdf.py", "docx_styler.py")) {
+            $dest = Join-PathSafe $Script:_scriptsDir $script
+            Invoke-DownloadWithRetry -Url "$($Script:REPO_URL)/$script" -OutFile $dest `
+                -MaxRetries 2 -TimeoutSec 120
+            if ((Get-Item $dest -ErrorAction Stop).Length -lt 500) {
+                throw "$script download looks invalid (too small)"
+            }
+        }
 
         # Verify scripts with Python syntax check
         if (Test-Path $Script:_pythonExe -PathType Leaf) {
-            $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList @("-m", "py_compile", $watcherPath) -Wait -PassThru -NoNewWindow
-            if ($proc.ExitCode -ne 0) { Write-Log "Warn" "watcher.py syntax check failed" -NoConsole }
-
-            $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList @("-m", "py_compile", $convertPath) -Wait -PassThru -NoNewWindow
-            if ($proc.ExitCode -ne 0) { Write-Log "Warn" "convert_pdf.py syntax check failed" -NoConsole }
+            foreach ($script in @("watcher.py", "convert_pdf.py", "docx_styler.py")) {
+                $scriptPath = Join-PathSafe $Script:_scriptsDir $script
+                $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList @("-m", "py_compile", $scriptPath) -Wait -PassThru -NoNewWindow
+                if ($proc.ExitCode -ne 0) { Write-Log "Warn" "$script syntax check failed" -NoConsole }
+            }
         }
 
-        Write-OK "Python scripts generated"
+        Write-OK "Python scripts deployed"
         Set-InstallState -Step "scripts_generated" -Status "ok"
     } catch {
-        Write-Fail "Failed to generate Python scripts: $_"
+        Write-Fail "Failed to deploy Python scripts: $_"
     }
 }
 
@@ -1643,7 +1649,7 @@ function Step-Verify {
 import sys
 import pymupdf4llm; print('pymupdf4llm ok')
 import markitdown; print('markitdown ok')
-import watchfiles; print('watchfiles ok')
+import watchdog; print('watchdog ok')
 "@
         [System.IO.File]::WriteAllText($verifyScript, $code)
         $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList @($verifyScript) -Wait -PassThru -NoNewWindow
@@ -1914,14 +1920,12 @@ function Invoke-ChangeLangs {
     Step-SelectTessdataLangs
     Step-DownloadTessdata
 
-    # Re-inject selected languages into existing convert_pdf.py
-    $convertPath = Join-PathSafe $Script:_scriptsDir "convert_pdf.py"
-    if (Test-Path $convertPath -PathType Leaf) {
+    # The launcher embeds the selected languages as MARK_DAWN_LANGS;
+    # regenerate it so the new selection applies on the next start.
+    if (Test-Path $Script:_launcherPath -PathType Leaf) {
+        Step-GenerateLauncher
         $langs = $Script:selectedTessdataLangs -join '+'
-        $content = Get-ConvertScript
-        $content = $content -replace '__TESSDATA_LANGS__', $langs
-        $content | Out-File $convertPath -Encoding utf8 -Force
-        Write-OK "Updated convert_pdf.py with languages: $langs"
+        Write-OK "Launcher updated with languages: $langs (restart the watcher)"
     }
 }
 
@@ -1933,6 +1937,15 @@ function Invoke-QuickReinstall {
     Write-Host "=== mark-dawn quick reinstall ===" -ForegroundColor Cyan
     Write-Host "Preserves: Python + pip packages, MSYS2, tessdata, pacman cache, Research"
     Write-Host "Deletes: scripts, launcher, state, inbox, failed, logs"
+    Write-Host ""
+
+    # B8: this deletes user files (Inbox/Inbox_Failed) — require confirmation,
+    # same gate as Uninstall and FullReinstall.
+    $confirm = Read-Host "This removes Inbox and Inbox_Failed (pending documents!). Type 'yes' to continue"
+    if ($confirm -ne "yes") {
+        Write-Host "Quick reinstall cancelled."
+        return
+    }
     Write-Host ""
 
     if (-not $Script:_installDir) { $Script:_installDir = $Script:DEFAULT_INSTALL_DIR }
@@ -2170,12 +2183,15 @@ set "PID_TMP=%PID_FILE%.tmp"
 set "LOG_FILE=%LOGS_DIR%\mark-dawn.log"
 set "PYTHON=%PYTHON_DIR%\python.exe"
 
-REM Set environment variables consumed by Python scripts
-set "MARK_DAWN_DATA=%DATA_DIR%"
-set "MARK_DAWN_SCRIPTS=%SCRIPTS_DIR%"
-set "MARK_DAWN_LOG=%LOG_FILE%"
+REM Unified env schema -- same variable names the Linux/macOS launchers use.
+set "MARK_DAWN_INBOX_DIR=%DATA_DIR%\Inbox"
+set "MARK_DAWN_OUT_DIR=%DATA_DIR%\Research"
+set "MARK_DAWN_FAILED_DIR=%DATA_DIR%\Inbox_Failed"
+set "MARK_DAWN_CONVERTER=%SCRIPTS_DIR%\convert_pdf.py"
+set "MARK_DAWN_LANGS=$($Script:selectedTessdataLangs -join '+')"
+if "%MARK_DAWN_LANGS%"=="" set "MARK_DAWN_LANGS=eng+rus+fra+deu+chi_sim+jpn"
 set "MARK_DAWN_PID=%PID_FILE%"
-set "TESSDATA_PREFIX=%INSTALL_DIR%\tessdata"
+set "MARK_DAWN_STATE_FILE=%LOGS_DIR%\state.json"
 set "PATH=%MSYS2_DIR%\mingw64\bin;%PYTHON_DIR%;%PYTHON_DIR%\Scripts;%PATH%"
 set "PYTHONIOENCODING=utf-8"
 
@@ -2288,10 +2304,10 @@ goto help
 
 :convert
     if "%2"=="" (
-        echo Usage: mark-dawn.bat convert FILE
+        echo Usage: mark-dawn.bat convert FILE [--docx]
         exit /b 1
     )
-    if not exist "%2" (
+    if not exist "%~f2" (
         echo File not found: %2
         exit /b 1
     )
@@ -2299,10 +2315,12 @@ goto help
         echo FAIL: Python not found at %PYTHON%
         exit /b 1
     )
-    "%PYTHON%" "%SCRIPTS_DIR%\convert_pdf.py" "%~f2"
+    "%PYTHON%" "%SCRIPTS_DIR%\convert_pdf.py" "%~f2" %3 %4 %5 %6 %7 %8 %9
     set EXIT_CODE=!ERRORLEVEL!
     if !EXIT_CODE! equ 0 (
         echo OK: Conversion complete
+    ) else if !EXIT_CODE! equ 2 (
+        echo BUSY: another conversion for the same file is running, try later
     ) else (
         echo FAIL: Conversion failed - exit code !EXIT_CODE!
     )
@@ -2320,37 +2338,44 @@ goto help
 :status
     if not exist "%PID_FILE%" (
         echo mark-dawn is not running
-        goto end
-    )
-    set /p PID=<"%PID_FILE%"
-    tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul 2>&1
-    if errorlevel 1 (
-        echo mark-dawn is not running - stale PID file, cleaning up
-        del "%PID_FILE%" >nul 2>&1
     ) else (
-        echo mark-dawn is running - PID %PID%
-        echo    Inbox:    %DATA_DIR%\Inbox
-        echo    Research: %DATA_DIR%\Research
-        echo    Logs:     %LOG_FILE%
+        set /p PID=<"%PID_FILE%"
+        tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul 2>&1
+        if errorlevel 1 (
+            echo mark-dawn is not running - stale PID file, cleaning up
+            del "%PID_FILE%" >nul 2>&1
+        ) else (
+            echo mark-dawn is running - PID %PID%
+            echo    Inbox:    %DATA_DIR%\Inbox
+            echo    Research: %DATA_DIR%\Research
+            echo    Logs:     %LOG_FILE%
+        )
+    )
+    if exist "%LOGS_DIR%\state.json" (
+        echo.
+        echo Watcher state:
+        "%PYTHON%" -c "import json,sys; d=json.load(open(sys.argv[1])); print('Pending:  ', d.get('pending',0)); print('Updated:  ', d.get('updated','-')); [print('  ', r.get('time'), r.get('status'), r.get('file'), '->', r.get('out')) for r in d.get('last',[])]" "%LOGS_DIR%\state.json"
     )
     goto end
 
 :update
     echo Updating mark-dawn components...
     echo.
-
-    echo [1/3] Updating Python packages via pip...
+    echo [1/3] Refreshing scripts and pinned requirements...
+    curl.exe -fsSL "https://raw.githubusercontent.com/kirijin/mark-dawn/main/requirements.txt" -o "%INSTALL_DIR%\requirements.txt" >nul 2>&1
+    curl.exe -fsSL "https://raw.githubusercontent.com/kirijin/mark-dawn/main/watcher.py" -o "%SCRIPTS_DIR%\watcher.py" >nul 2>&1
+    curl.exe -fsSL "https://raw.githubusercontent.com/kirijin/mark-dawn/main/convert_pdf.py" -o "%SCRIPTS_DIR%\convert_pdf.py" >nul 2>&1
+    curl.exe -fsSL "https://raw.githubusercontent.com/kirijin/mark-dawn/main/docx_styler.py" -o "%SCRIPTS_DIR%\docx_styler.py" >nul 2>&1
+    echo [2/3] Updating Python packages (pinned requirements)...
     if exist "%PYTHON%" (
-        "%PYTHON%" -m pip install --upgrade --no-cache-dir pymupdf4llm markitdown python-docx openpyxl python-pptx watchfiles
+        "%PYTHON%" -m pip install --upgrade --no-cache-dir -r "%INSTALL_DIR%\requirements.txt"
     ) else (
         echo WARNING: Python not found. Skipping pip update.
     )
-
-    echo [2/3] Restarting watcher...
+    echo [3/3] Restarting watcher...
     call :stop
     timeout /t 2 /nobreak >nul
     call :start
-
     echo.
     echo OK: Update complete
     goto end
@@ -2412,16 +2437,16 @@ goto help
     echo   start              Start background watcher (watches data\Inbox)
     echo   stop               Stop background watcher
     echo   restart            Restart watcher
-    echo   convert FILE       Convert single file
+    echo   convert FILE [--docx]  Convert single file (optionally to DOCX)
     echo   logs               Follow logs (last 50 lines + live tail)
-    echo   status             Show watcher status and PID
-    echo   update             Update Python dependencies
+    echo   status             Show watcher status, pending queue and recent results
+    echo   update             Refresh code, pinned deps and restart watcher
     echo   install-task       Install auto-start on login (requires Admin)
     echo   uninstall-task     Remove auto-start entry (requires Admin)
     echo   help               Show this help message
     echo.
-    echo Supported formats: PDF, DOCX, XLSX, PPTX, HTML, CSV, RTF
-    echo Supported languages: English, Russian, French, German, Chinese, Japanese
+    echo Supported formats: PDF, DjVu, TIFF, JPEG, PNG, BMP, WebP, DOCX, XLSX, PPTX, HTML, CSV, RTF
+    echo Supported languages: eng+rus+fra+deu+chi_sim+jpn (configurable via MARK_DAWN_LANGS)
     echo.
     echo Directories:
     echo   %DATA_DIR%\Inbox         - Drop files here for auto-conversion
@@ -2436,568 +2461,6 @@ exit /b 0
 "@
 }
 
-function Get-WatcherScript {
-    return @'
-#!/usr/bin/env python3
-"""mark-dawn watcher: monitors Inbox folder and converts new files to Markdown."""
-import os, sys, time, subprocess
-from pathlib import Path
-from watchfiles import watch, Change
-
-DATA_DIR     = Path(os.environ.get("MARK_DAWN_DATA", os.path.expanduser("~/Documents")))
-INBOX        = DATA_DIR / "Inbox"
-RESEARCH     = DATA_DIR / "Research"
-FAILED       = DATA_DIR / "Inbox_Failed"
-SCRIPTS_DIR  = Path(os.environ.get("MARK_DAWN_SCRIPTS", Path(__file__).parent))
-LOG_FILE     = Path(os.environ.get("MARK_DAWN_LOG", SCRIPTS_DIR.parent / "logs" / "mark-dawn.log"))
-PID_FILE     = Path(os.environ.get("MARK_DAWN_PID", SCRIPTS_DIR.parent / "mark-dawn.pid"))
-STOP_FILE    = SCRIPTS_DIR.parent / "mark-dawn.stop"
-CONVERT_SCRIPT = SCRIPTS_DIR / "convert_pdf.py"
-DEBOUNCE     = 3.0
-SUPPORTED    = {".pdf", ".docx", ".xlsx", ".pptx", ".html", ".csv", ".rtf",
-               ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".djvu"}
-
-_pending = {}
-
-def log(msg):
-    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] {msg}"
-    print(line, flush=True)
-    try:
-        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
-
-def file_is_ready(filepath, min_size=1024):
-    try:
-        if not filepath.exists():
-            return False
-        if filepath.stat().st_size < min_size:
-            return False
-        s1 = filepath.stat().st_size
-        time.sleep(0.5)
-        s2 = filepath.stat().st_size
-        return s1 == s2
-    except (OSError, PermissionError):
-        return False
-
-def _touch(p):
-    p = Path(p)
-    if p.suffix.lower() in SUPPORTED and not p.name.startswith("~") and not p.name.startswith(".") and "upscaled" not in p.name:
-        if p not in _pending:
-            log(f"Detected: {p.name}")
-        _pending[p] = time.time()
-
-def process_file(file_path):
-    ext = file_path.suffix.lower()
-    out_file = RESEARCH / f"{file_path.stem}.md"
-
-    try:
-        if ext == ".pdf":
-            result = subprocess.run(
-                [sys.executable, str(CONVERT_SCRIPT), str(file_path)],
-                timeout=700
-            )
-            if result.returncode == 0 and out_file.exists():
-                file_path.unlink(missing_ok=True)
-                log(f"OK: {file_path.name} -> {out_file.name}")
-                return True
-        elif ext in {".docx", ".xlsx", ".pptx", ".html", ".csv", ".rtf"}:
-            env = os.environ.copy()
-            env["PYTHONIOENCODING"] = "utf-8"
-            result = subprocess.run(
-                ["markitdown", str(file_path)],
-                capture_output=True, text=True, timeout=120, env=env
-            )
-            if result.returncode == 0 and result.stdout:
-                tmp = out_file.with_suffix(".md.tmp")
-                tmp.write_text(result.stdout, encoding="utf-8")
-                tmp.rename(out_file)
-                file_path.unlink(missing_ok=True)
-                log(f"OK: {file_path.name} -> {out_file.name}")
-                return True
-        elif ext in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".djvu"}:
-            result = subprocess.run(
-                [sys.executable, str(CONVERT_SCRIPT), str(file_path)],
-                timeout=700
-            )
-            if result.returncode == 0 and out_file.exists():
-                file_path.unlink(missing_ok=True)
-                log(f"OK: {file_path.name} -> {out_file.name}")
-                return True
-    except subprocess.TimeoutExpired:
-        log(f"Timeout processing {file_path.name}")
-    except Exception as e:
-        log(f"Error processing {file_path.name}: {e}")
-
-    try:
-        dest = FAILED / file_path.name
-        file_path.rename(dest)
-        log(f"FAIL: {file_path.name} moved to Failed")
-    except Exception as e:
-        log(f"Failed to move {file_path.name} to Failed: {e}")
-    return False
-
-def main():
-    INBOX.mkdir(parents=True, exist_ok=True)
-    RESEARCH.mkdir(parents=True, exist_ok=True)
-    FAILED.mkdir(parents=True, exist_ok=True)
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        pid_tmp = PID_FILE.with_suffix(".pid.tmp")
-        pid_tmp.write_text(str(os.getpid()))
-        pid_tmp.rename(PID_FILE)
-    except Exception as e:
-        log(f"WARNING: Could not write PID file: {e}")
-
-    STOP_FILE.unlink(missing_ok=True)
-
-    log(f"mark-dawn watcher started (PID {os.getpid()})")
-    log(f"Watching: {INBOX}")
-    log(f"Output:   {RESEARCH}")
-    log(f"Stop marker: {STOP_FILE}")
-
-    try:
-        for changes in watch(str(INBOX), recursive=False):
-            if STOP_FILE.exists():
-                log("Stop marker detected, shutting down...")
-                break
-
-            for change_type, path_str in changes:
-                if change_type != Change.deleted:
-                    _touch(path_str)
-
-            now = time.time()
-            ready = [
-                p for p, t in list(_pending.items())
-                if now - t >= DEBOUNCE and p.exists() and file_is_ready(p)
-            ]
-            for p in ready:
-                _pending.pop(p, None)
-                if not p.exists():
-                    continue
-                log(f"Processing: {p.name}")
-                process_file(p)
-
-            stale = [p for p, t in list(_pending.items()) if now - t > 300]
-            for p in stale:
-                _pending.pop(p, None)
-    except KeyboardInterrupt:
-        log("Interrupted, stopping watcher...")
-    finally:
-        log("Watcher stopped")
-
-    try:
-        PID_FILE.unlink(missing_ok=True)
-    except Exception:
-        pass
-
-if __name__ == "__main__":
-    main()
-'@
-}
-
-function Get-ConvertScript {
-    return @'
-#!/usr/bin/env python3
-"""mark-dawn PDF converter: digital via pymupdf4llm, scanned via ocrmypdf."""
-import os, sys, subprocess, tempfile, shutil, ctypes
-from pathlib import Path
-import fitz
-import pymupdf4llm
-
-DATA_DIR    = Path(os.environ.get("MARK_DAWN_DATA", os.path.expanduser("~/Documents")))
-INSTALL_DIR = Path(__file__).resolve().parent.parent
-RESEARCH    = DATA_DIR / "Research"
-RESEARCH.mkdir(parents=True, exist_ok=True)
-
-file_path = Path(sys.argv[1])
-out_file  = RESEARCH / f"{file_path.stem}.md"
-
-_MSYS2_MINGW = INSTALL_DIR / ".msys2" / "mingw64" / "bin"
-_MSYS2_USR   = INSTALL_DIR / ".msys2" / "usr" / "bin"
-
-def _find_ocrmypdf():
-    exe = shutil.which("ocrmypdf")
-    if exe:
-        return exe
-    scripts_dir = Path(sys.executable).parent / "Scripts"
-    for cand in [scripts_dir / "ocrmypdf.exe", scripts_dir / "ocrmypdf"]:
-        if cand.is_file():
-            return str(cand)
-    return "ocrmypdf"
-
-def _build_env():
-    """Return env with MSYS2 mingw64+usr on PATH so tools find dependency DLLs."""
-    env = os.environ.copy()
-    env["PATH"] = str(_MSYS2_MINGW) + os.pathsep + str(_MSYS2_USR) + os.pathsep + env.get("PATH", "")
-    return env
-
-def _try_djvu_text_via_bash(djvu_path):
-    bash = _MSYS2_USR / "bash.exe"
-    if not bash.is_file():
-        return None
-    env = _build_env()
-    env["MSYSTEM"] = "MINGW64"
-    env["CHERE_INVOKING"] = "1"
-    try:
-        result = subprocess.run(
-            [str(bash), "-lc", f'djvutxt "{djvu_path}" -'],
-            capture_output=True, text=True, timeout=120, env=env,
-        )
-    except Exception:
-        return None
-    if result.returncode == 0 and result.stdout.strip():
-        return result.stdout
-    return None
-
-def _djvu_to_pdf(djvu_path, pdf_path):
-    from PIL import Image
-    dll_path = _MSYS2_MINGW / "libdjvulibre-21.dll"
-    if not dll_path.is_file():
-        raise FileNotFoundError(f"DjVuLibre DLL not found at {dll_path}")
-    # Ensure MSYS2 runtime DLLs are findable by the Windows loader
-    if hasattr(os, "add_dll_directory"):
-        os.add_dll_directory(str(_MSYS2_MINGW))
-        os.add_dll_directory(str(_MSYS2_USR))
-    else:
-        os.environ["PATH"] = str(_MSYS2_MINGW) + os.pathsep + str(_MSYS2_USR) + os.pathsep + os.environ.get("PATH", "")
-    dll = ctypes.CDLL(str(dll_path))
-
-    class _Rect(ctypes.Structure):
-        _fields_ = [("x", ctypes.c_int), ("y", ctypes.c_int),
-                    ("w", ctypes.c_uint), ("h", ctypes.c_uint)]
-
-    class _PageInfo(ctypes.Structure):
-        _fields_ = [
-            ("width", ctypes.c_uint), ("height", ctypes.c_uint),
-            ("dpi", ctypes.c_uint), ("version", ctypes.c_uint),
-            ("type", ctypes.c_int),
-        ]
-
-    dll.ddjvu_context_create.restype = ctypes.c_void_p
-    dll.ddjvu_context_create.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
-    dll.ddjvu_context_release.restype = None
-    dll.ddjvu_context_release.argtypes = [ctypes.c_void_p]
-    dll.ddjvu_document_create_by_filename.restype = ctypes.c_void_p
-    dll.ddjvu_document_create_by_filename.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
-    dll.ddjvu_document_job.restype = ctypes.c_void_p
-    dll.ddjvu_document_job.argtypes = [ctypes.c_void_p]
-    dll.ddjvu_page_job.restype = ctypes.c_void_p
-    dll.ddjvu_page_job.argtypes = [ctypes.c_void_p]
-    dll.ddjvu_message_wait.restype = ctypes.c_void_p
-    dll.ddjvu_message_wait.argtypes = [ctypes.c_void_p]
-    dll.ddjvu_document_get_pagenum.restype = ctypes.c_int
-    dll.ddjvu_document_get_pagenum.argtypes = [ctypes.c_void_p]
-    dll.ddjvu_document_get_pageinfo.restype = ctypes.c_int
-    dll.ddjvu_document_get_pageinfo.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(_PageInfo)]
-    dll.ddjvu_page_create_by_pageno.restype = ctypes.c_void_p
-    dll.ddjvu_page_create_by_pageno.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    dll.ddjvu_page_get_width.restype = ctypes.c_uint
-    dll.ddjvu_page_get_width.argtypes = [ctypes.c_void_p]
-    dll.ddjvu_page_get_height.restype = ctypes.c_uint
-    dll.ddjvu_page_get_height.argtypes = [ctypes.c_void_p]
-    dll.ddjvu_format_create.restype = ctypes.c_void_p
-    dll.ddjvu_format_create.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
-    dll.ddjvu_format_release.restype = None
-    dll.ddjvu_format_release.argtypes = [ctypes.c_void_p]
-    dll.ddjvu_format_set_row_order.restype = None
-    dll.ddjvu_format_set_row_order.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    dll.ddjvu_page_render.restype = ctypes.c_int
-    dll.ddjvu_page_render.argtypes = [
-        ctypes.c_void_p, ctypes.c_int,
-        ctypes.POINTER(_Rect), ctypes.POINTER(_Rect),
-        ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p,
-    ]
-
-    DDJVU_RENDER_COLOR = 0
-    DDJVU_FORMAT_RGB24 = 1
-
-    def _drain_for_page(ctx, page, max_iter=10000):
-        for _ in range(max_iter):
-            msg = dll.ddjvu_message_wait(ctx)
-            if not msg:
-                return False
-            w = dll.ddjvu_page_get_width(page)
-            if w > 0:
-                return True
-        return False
-
-    ctx = dll.ddjvu_context_create(b"mark-dawn", 0, None, None)
-    if not ctx:
-        raise RuntimeError("ddjvu_context_create failed")
-    try:
-        doc = dll.ddjvu_document_create_by_filename(ctx, djvu_path.encode("utf-8"), 0)
-        if not doc:
-            raise RuntimeError("ddjvu_document_create_by_filename failed")
-
-        dll.ddjvu_document_job(doc)
-        dll.ddjvu_message_wait(ctx)
-
-        num_pages = dll.ddjvu_document_get_pagenum(doc)
-        if num_pages < 1:
-            raise RuntimeError(f"Document has {num_pages} pages")
-
-        fmt = dll.ddjvu_format_create(DDJVU_FORMAT_RGB24, 0, None)
-        if not fmt:
-            raise RuntimeError("ddjvu_format_create failed")
-        dll.ddjvu_format_set_row_order(fmt, 1)
-
-        images = []
-        for i in range(num_pages):
-            page = dll.ddjvu_page_create_by_pageno(doc, i)
-            if not page:
-                continue
-
-            dll.ddjvu_page_job(page)
-            if not _drain_for_page(ctx, page):
-                continue
-
-            w = dll.ddjvu_page_get_width(page)
-            h = dll.ddjvu_page_get_height(page)
-
-            info = _PageInfo()
-            if dll.ddjvu_document_get_pageinfo(doc, i, ctypes.byref(info)):
-                page_dpi = info.dpi
-            else:
-                page_dpi = 300
-            if page_dpi <= 0:
-                page_dpi = 300
-
-            rowstride = w * 3
-            buf = ctypes.create_string_buffer(rowstride * h)
-            rect = _Rect(0, 0, w, h)
-            ok = dll.ddjvu_page_render(
-                page, DDJVU_RENDER_COLOR,
-                ctypes.byref(rect), ctypes.byref(rect),
-                fmt, rowstride, buf,
-            )
-            if not ok:
-                continue
-
-            img = Image.frombuffer("RGB", (w, h), buf, "raw", "RGB", 0, 1)
-            # Downscale very large pages to avoid OOM in tesseract
-            max_dim = 1600
-            if w > max_dim or h > max_dim:
-                scale = min(max_dim / w, max_dim / h)
-                img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-                new_dpi = int(page_dpi * scale) if page_dpi > 0 else 150
-            else:
-                new_dpi = page_dpi if page_dpi > 0 else 300
-            img.info["dpi"] = (new_dpi, new_dpi)
-            images.append(img)
-            # Limit rendered pages to 50 to avoid OOM
-            if len(images) >= 50:
-                print(f"  Limiting to first {len(images)} pages to avoid OOM")
-                break
-
-        if not images:
-            raise RuntimeError("No pages could be rendered")
-
-        first = images[0]
-        first.save(
-            pdf_path, save_all=True,
-            append_images=images[1:] if len(images) > 1 else [],
-            format="PDF", resolution=images[0].info["dpi"][0],
-        )
-        print(f"  Rendered {len(images)} page(s) via ctypes DjVu")
-    finally:
-        if ctx:
-            dll.ddjvu_context_release(ctx)
-
-
-def _render_pdf_pages(pdf_path):
-    """Render PDF pages as images via fitz, return path to image-only PDF."""
-    import tempfile
-    from PIL import Image as PilImage
-    doc = fitz.open(str(pdf_path))
-    images = []
-    for i in range(min(len(doc), 50)):
-        page = doc[i]
-        # Render at 200 DPI (default fitz ~72, scale to get useful resolution)
-        zoom = 200 / 72
-        mat = fitz.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat)
-        img = PilImage.frombuffer("RGB", [pix.width, pix.height], pix.samples)
-        max_dim = 2400
-        w, h = img.size
-        if w > max_dim or h > max_dim:
-            scale = min(max_dim / w, max_dim / h)
-            img = img.resize((int(w * scale), int(h * scale)), PilImage.LANCZOS)
-        img.info["dpi"] = (200, 200)
-        images.append(img)
-    doc.close()
-    if not images:
-        return pdf_path
-    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    tmp.close()
-    first = images[0]
-    first.save(tmp.name, save_all=True, append_images=images[1:] if len(images) > 1 else [], format="PDF")
-    print(f"  Rendered {len(images)} page(s) via fitz rasterization")
-    return Path(tmp.name)
-
-
-lock_file = RESEARCH / f".{file_path.stem}.lock"
-
-try:
-    if lock_file.exists():
-        print(f"Lock file exists for {file_path.name}, another process may be working on it")
-        sys.exit(0)
-    lock_file.write_text(str(os.getpid()))
-
-    # Convert images and djvu to PDF first
-    ext = file_path.suffix.lower()
-    pdf_source = file_path
-    is_temp_pdf = False
-    is_temp_input = False
-    temp_input_path = None
-    if ext in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}:
-        print(f"Image input ({ext}). Running ocrmypdf to create PDF...")
-        pdf_source = file_path.with_suffix(".pdf.tmp")
-        is_temp_pdf = True
-        ocrmypdf_exe = _find_ocrmypdf()
-        ocr_cmd = [
-            ocrmypdf_exe, "--skip-text", "--image-dpi", "300",
-            "-l", "__TESSDATA_LANGS__",
-            str(file_path), str(pdf_source)
-        ]
-        env = _build_env()
-        env["TESSDATA_PREFIX"] = str(INSTALL_DIR / "tessdata")
-        result = subprocess.run(ocr_cmd, capture_output=True, text=True, env=env, timeout=600)
-        if result.returncode != 0:
-            print(f"ocrmypdf failed (exit {result.returncode}), trying PIL-based conversion...", file=sys.stderr)
-            # Fallback: PIL image → PDF
-            from PIL import Image as PilImage2
-            try:
-                img = PilImage2.open(str(file_path))
-                img.save(str(pdf_source), "PDF", resolution=300)
-                print("  PIL-based image-to-PDF succeeded")
-            except Exception as e2:
-                print(f"  PIL fallback also failed: {e2}", file=sys.stderr)
-                sys.exit(1)
-    elif ext == ".djvu":
-        print("DjVu input. Opening with fitz...")
-        try:
-            fitz.open(str(file_path)).close()
-            pdf_source = file_path
-            is_temp_pdf = False
-        except Exception:
-            print("  fitz cannot open DjVu, trying native text extraction via bash...")
-            djvu_text = _try_djvu_text_via_bash(str(file_path))
-            if djvu_text:
-                tmp_out = out_file.with_suffix(".md.tmp")
-                tmp_out.write_text(djvu_text, encoding="utf-8")
-                if out_file.exists():
-                    out_file.unlink()
-                tmp_out.rename(out_file)
-                print(f"OK: {out_file.name} (native DjVu text)")
-                sys.exit(0)
-            print("  no native text, rendering via ctypes+libdjvulibre...")
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-                pdf_source = Path(f.name)
-            is_temp_pdf = True
-            try:
-                _djvu_to_pdf(str(file_path), str(pdf_source))
-            except Exception as e:
-                print(f"  DjVu ctypes rendering failed: {e}", file=sys.stderr)
-                sys.exit(1)
-
-    doc = fitz.open(str(pdf_source))
-    num_pages = len(doc)
-    if num_pages == 0:
-        doc.close()
-        print(f"Empty PDF: {file_path.name}")
-        sys.exit(1)
-
-    text_len = sum(len(page.get_text()) for page in doc)
-    doc.close()
-
-    avg_chars = text_len / num_pages if num_pages > 0 else 0
-
-    if avg_chars > 100:
-        print(f"Digital PDF ({int(avg_chars)} chars/page). Converting via pymupdf4llm...")
-        md_text = pymupdf4llm.to_markdown(str(pdf_source))
-        tmp_out = out_file.with_suffix(".md.tmp")
-        tmp_out.write_text(md_text, encoding="utf-8")
-        if out_file.exists():
-            out_file.unlink()
-        tmp_out.rename(out_file)
-        print(f"OK: {out_file.name}")
-        sys.exit(0)
-    else:
-        if not is_temp_pdf:
-            # Scanned PDF that wasn't pre-processed — render pages as images first
-            print(f"Scanned PDF ({int(avg_chars)} chars/page). Rendering pages as images for better OCR...")
-            pdf_source = _render_pdf_pages(pdf_source)
-            is_temp_pdf = True
-
-        print(f"Scanned PDF ({int(avg_chars)} chars/page). Running ocrmypdf...")
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            ocr_input = Path(tmp_dir) / pdf_source.name
-            ocr_output = Path(tmp_dir) / f"ocr_{pdf_source.name}"
-
-            shutil.copy2(str(pdf_source), str(ocr_input))
-
-            ocrmypdf_exe = _find_ocrmypdf()
-
-            env = _build_env()
-            env["TESSDATA_PREFIX"] = str(INSTALL_DIR / "tessdata")
-            env["PYTHONIOENCODING"] = "utf-8"
-            env["OMP_THREAD_LIMIT"] = "1"
-
-            cmd = [
-                ocrmypdf_exe,
-                "--skip-text",
-                "-l", "__TESSDATA_LANGS__",
-                "-j", "1",
-                "--output-type", "pdf",
-                "--pdf-renderer", "sandwich",
-                str(ocr_input),
-                str(ocr_output)
-            ]
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, env=env, timeout=600
-            )
-            if result.returncode != 0:
-                print(f"ocrmypdf failed (exit {result.returncode}):", file=sys.stderr)
-                if result.stderr:
-                    print(result.stderr[-1024:], file=sys.stderr)
-                sys.exit(1)
-            if not ocr_output.exists():
-                print("ocrmypdf did not produce output file", file=sys.stderr)
-                sys.exit(1)
-
-            print("OCR complete. Converting to Markdown...")
-            md_text = pymupdf4llm.to_markdown(str(ocr_output))
-            tmp_out = out_file.with_suffix(".md.tmp")
-            tmp_out.write_text(md_text, encoding="utf-8")
-            if out_file.exists():
-                out_file.unlink()
-            tmp_out.rename(out_file)
-            print(f"OK: {out_file.name}")
-            sys.exit(0)
-
-except subprocess.TimeoutExpired:
-    print("Timeout: ocrmypdf took more than 10 minutes", file=sys.stderr)
-    sys.exit(1)
-except Exception as e:
-    print(f"Fatal error: {e}", file=sys.stderr)
-    sys.exit(1)
-finally:
-    try:
-        lock_file.unlink(missing_ok=True)
-        if is_temp_pdf and pdf_source != file_path:
-            pdf_source.unlink(missing_ok=True)
-        if is_temp_input and temp_input_path:
-            temp_input_path.unlink(missing_ok=True)
-    except Exception:
-        pass
-'@
-}
 
 # ============================================================================
 # COMMAND DISPATCH
@@ -3101,6 +2564,7 @@ function Main {
         $Script:_tessdataDir = Join-PathSafe $Script:_installDir "tessdata"
         $Script:_msys2Dir   = Join-PathSafe $Script:_installDir ".msys2"
         $Script:_scriptsDir = Join-PathSafe $Script:_installDir "scripts"
+        $Script:_launcherPath = Join-PathSafe $Script:_installDir "mark-dawn.bat"
         Invoke-ChangeLangs
         return
     }

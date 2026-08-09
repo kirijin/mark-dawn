@@ -38,6 +38,7 @@ LOG_FILE="$LOG_DIR/mark-dawn.log"
 
 mkdir -p "$LOG_DIR" "$CONFIG_DIR"
 
+# shellcheck disable=SC1090  # dynamic config source by design
 # --- Config helpers ----------------------------------------------------------
 load_config() {
     [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
@@ -77,8 +78,22 @@ detect_runtime() {
 RUNTIME=$(detect_runtime)
 volumes() { echo "-v $DATA_DIR/Inbox:/data/Inbox:Z -v $DATA_DIR/Research:/data/Research:Z -v $DATA_DIR/Inbox_Failed:/data/Inbox_Failed:Z"; }
 
+# The pipeline reads these inside the container; without them watcher/convert
+# fall back to $HOME/Documents (root) which is not volume-mounted.
+container_env() {
+    echo "-e MARK_DAWN_INBOX_DIR=/data/Inbox -e MARK_DAWN_OUT_DIR=/data/Research -e MARK_DAWN_FAILED_DIR=/data/Inbox_Failed"
+}
+
 pull_image() {
-    $RUNTIME pull "$IMAGE" 2>/dev/null || log "Using cached image"
+    if ! $RUNTIME pull "$IMAGE" 2>/dev/null; then
+        if $RUNTIME image exists "$IMAGE" 2>/dev/null; then
+            log "Using cached image"
+        else
+            err "Error: could not pull $IMAGE and no local copy exists"
+            err "Check your network connection and the MARK_DAWN_IMAGE setting."
+            exit 1
+        fi
+    fi
 }
 
 ensure_dirs() {
@@ -90,12 +105,23 @@ ensure_dirs() {
 # --- Commands -----------------------------------------------------------------
 cmd_start() {
     ensure_dirs
+    # Don't double-start: neither a manual container nor the systemd service.
+    if $RUNTIME ps --filter name=mark-dawn --format "{{.Names}}" 2>/dev/null | grep -qx "mark-dawn"; then
+        log "Watcher already running"
+        exit 0
+    fi
+    if command -v systemctl &>/dev/null && systemctl --user is-active --quiet mark-dawn.service 2>/dev/null; then
+        log "Watcher already running as the mark-dawn systemd service"
+        exit 0
+    fi
     pull_image
     local target="${1:-watcher}"
 
     log "Starting mark-dawn ($target)..."
+    # shellcheck disable=SC2046  # volumes()/container_env() emit multi-arg flags
     $RUNTIME run -d --name mark-dawn --restart unless-stopped \
         $(volumes) \
+        $(container_env) \
         -e "MARK_DAWN_LANGS=$LANGS" \
         "$IMAGE" "$target"
     log "✅ Watcher started"
@@ -106,6 +132,9 @@ cmd_start() {
 
 cmd_stop() {
     log "Stopping mark-dawn..."
+    if command -v systemctl &>/dev/null && systemctl --user is-active --quiet mark-dawn.service 2>/dev/null; then
+        systemctl --user stop mark-dawn.service
+    fi
     $RUNTIME stop mark-dawn 2>/dev/null || true
     $RUNTIME rm mark-dawn 2>/dev/null || true
     log "✅ Stopped"
@@ -128,8 +157,10 @@ cmd_convert() {
     log "Converting: $(basename "$file_path")"
     ensure_dirs 2>/dev/null || true
     pull_image 2>/dev/null || true
+    # shellcheck disable=SC2046  # volumes()/container_env() emit multi-arg flags
     $RUNTIME run --rm \
         $(volumes) \
+        $(container_env) \
         -v "$(dirname "$file_path"):/input:Z" \
         -e "MARK_DAWN_LANGS=$LANGS" \
         "$IMAGE" convert "/input/$(basename "$file_path")" $want_docx
@@ -149,10 +180,19 @@ cmd_status() {
     echo ""
     $RUNTIME ps --filter name=mark-dawn --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
     echo ""
-    echo "Inbox contents:"
-    ls -1 "$DATA_DIR/Inbox" 2>/dev/null | head -10 || echo "  (empty)"
-    echo "Research contents:"
-    ls -1 "$DATA_DIR/Research" 2>/dev/null | head -10 || echo "  (empty)"
+    echo "Inbox contents (newest first):"
+    list_or_empty "$DATA_DIR/Inbox"
+    echo "Research contents (newest first):"
+    list_or_empty "$DATA_DIR/Research"
+}
+
+list_or_empty() {
+    local d="$1"
+    if [[ -d "$d" ]] && [[ -n "$(ls -A "$d" 2>/dev/null)" ]]; then
+        ls -1t "$d" | head -5
+    else
+        echo "  (empty)"
+    fi
 }
 
 cmd_update() {
@@ -166,6 +206,10 @@ cmd_install_systemd() {
     ensure_dirs
     local unit="$HOME/.config/systemd/user/mark-dawn.service"
     mkdir -p "$(dirname "$unit")"
+    # Foreground `podman run --rm` so systemd tracks the watcher process
+    # directly (no -d, which would make systemd think the unit exited).
+    # Same container name as `start` — the running checks in cmd_start/
+    # cmd_stop prevent a manual container and the service from doubling up.
     cat > "$unit" <<EOF
 [Unit]
 Description=mark-dawn Document Converter
@@ -176,9 +220,12 @@ Type=simple
 Restart=always
 RestartSec=10
 Environment=MARK_DAWN_LANGS=$LANGS
-ExecStart=$(which $RUNTIME) run --rm --name mark-dawn-systemd \
+Environment=MARK_DAWN_INBOX_DIR=/data/Inbox
+Environment=MARK_DAWN_OUT_DIR=/data/Research
+Environment=MARK_DAWN_FAILED_DIR=/data/Inbox_Failed
+ExecStart=$(command -v $RUNTIME) run --rm --name mark-dawn \
     $(volumes) $IMAGE watcher
-ExecStop=$(which $RUNTIME) stop mark-dawn-systemd
+ExecStop=$(command -v $RUNTIME) stop -t 10 mark-dawn
 
 [Install]
 WantedBy=default.target

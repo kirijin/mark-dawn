@@ -1,8 +1,22 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
 # SPDX-License-Identifier: MIT
-"""mark-dawn watcher — monitors Inbox for new files, converts automatically."""
-import time, subprocess, sys, os
+"""mark-dawn watcher — monitors Inbox for new files, converts automatically.
+
+Shared by every platform (Linux container, macOS brew/venv, macOS Apple
+Container, Windows portable). All conversion goes through convert_pdf.py so
+the conversion logic exists in exactly one place; this file only watches,
+debounces, retries, and moves files.
+
+Env schema (same one every launcher passes):
+  MARK_DAWN_INBOX_DIR    watch folder         (default ~/Documents/Inbox)
+  MARK_DAWN_OUT_DIR      output folder        (default ~/Documents/Research)
+  MARK_DAWN_FAILED_DIR   failed-input folder  (default ~/Documents/Inbox_Failed)
+  MARK_DAWN_CONVERTER    convert_pdf.py path  (default: this script's directory)
+  MARK_DAWN_PID          pid file to write    (Windows launcher relies on it)
+  MARK_DAWN_STATE_FILE   JSON status file     (the `status` command reads it)
+"""
+import os, sys, time, json, subprocess
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -11,115 +25,247 @@ _HOME = Path.home()
 INBOX    = Path(os.environ.get("MARK_DAWN_INBOX_DIR",   str(_HOME / "Documents" / "Inbox")))
 RESEARCH = Path(os.environ.get("MARK_DAWN_OUT_DIR",     str(_HOME / "Documents" / "Research")))
 FAILED   = Path(os.environ.get("MARK_DAWN_FAILED_DIR",  str(_HOME / "Documents" / "Inbox_Failed")))
-CONVERT  = Path(os.environ.get("MARK_DAWN_CONVERTER",   "/usr/local/bin/convert_pdf.py"))
-DEBOUNCE = 3.0
+CONVERT  = Path(os.environ.get("MARK_DAWN_CONVERTER",   str(Path(__file__).resolve().parent / "convert_pdf.py")))
+PID_FILE = Path(os.environ["MARK_DAWN_PID"]) if os.environ.get("MARK_DAWN_PID") else None
+STATE_FILE = Path(os.environ["MARK_DAWN_STATE_FILE"]) if os.environ.get("MARK_DAWN_STATE_FILE") else None
 
-# Extensions handled by convert_pdf.py
-ALL_EXTS = {".pdf", ".djvu", ".tiff", ".tif", ".jpeg", ".jpg", ".png",
-            ".bmp", ".webp", ".docx", ".xlsx", ".pptx", ".html", ".csv", ".rtf"}
+INBOX_ROOT = str(INBOX.resolve())
+
+DEBOUNCE = 3.0        # seconds without modification before a file is processed
+RETRY_DELAY = 30.0    # base backoff between failed attempts
+MAX_ATTEMPTS = 3      # attempts before the file is moved to Inbox_Failed
+CONVERT_TIMEOUT = 900
+
+SUPPORTED = {".pdf", ".djvu", ".tiff", ".tif", ".jpeg", ".jpg", ".png",
+             ".bmp", ".webp", ".docx", ".xlsx", ".pptx", ".html", ".csv", ".rtf"}
+
+# path -> {"seen": float, "attempts": int, "ready_at": float}
+_pending = {}
+
+_state = {"pid": os.getpid(), "started": "", "inbox": str(INBOX),
+          "pending": 0, "updated": "", "last": []}
+
+
+def log(msg):
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+    print(line, flush=True)
+
+
+def _save_state():
+    if not STATE_FILE:
+        return
+    try:
+        _state["pending"] = len(_pending)
+        _state["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(json.dumps(_state, indent=1), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _note_result(name, status, out):
+    _state["last"] = ([
+        {"time": time.strftime("%H:%M:%S"), "file": name,
+         "status": status, "out": out}
+    ] + _state["last"])[:5]
+
+
+def _unique_path(directory: Path, name: str) -> Path:
+    candidate = directory / name
+    if not candidate.exists():
+        return candidate
+    stem, ext = os.path.splitext(name)
+    for i in range(1, 10000):
+        candidate = directory / f"{stem} ({i}){ext}"
+        if not candidate.exists():
+            return candidate
+    return directory / f"{stem}.{int(time.time())}{ext}"
+
+
+def _touch(p):
+    p = Path(p)
+    if p.is_dir() or p.name.startswith(".") or p.suffix.lower() not in SUPPORTED:
+        return
+    try:
+        if not str(p.resolve()).startswith(INBOX_ROOT + os.sep):
+            return  # files moved OUT of the inbox are not our job
+    except OSError:
+        return
+    if p not in _pending:
+        _pending[p] = {"seen": time.time(), "attempts": 0, "ready_at": time.time()}
+        log(f"Detected: {p.name}")
+    else:
+        # Modification resets the debounce window (mid-copy file).
+        _pending[p]["seen"] = time.time()
+        _pending[p]["ready_at"] = time.time()
+
+
+def _stable_size(p, settle=0.5):
+    """True when the file size is unchanged across `settle` seconds."""
+    try:
+        s1 = p.stat().st_size
+    except OSError:
+        return False
+    time.sleep(settle)
+    try:
+        return p.stat().st_size == s1
+    except OSError:
+        return False
+
+
+def _parse_output_name(stdout):
+    """Last 'OK: <name>' line printed by convert_pdf.py."""
+    for line in reversed((stdout or "").splitlines()):
+        if line.startswith("OK: "):
+            return line[4:].strip()
+    return None
+
+
+def _convert(path):
+    args = [sys.executable, str(CONVERT), str(path)]
+    if path.parent.name.lower() == "2docx":
+        args.append("--docx")
+    try:
+        result = subprocess.run(args, capture_output=True, text=True,
+                                timeout=CONVERT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        log(f"Timeout: {path.name}")
+        return None
+    except Exception as e:
+        log(f"Error: {path.name}: {e}")
+        return None
+
+    if result.returncode == 2:
+        log(f"Busy (lock held), will retry: {path.name}")
+        return None  # retryable, not a failure
+
+    if result.returncode != 0:
+        tail = (result.stderr or "").strip().splitlines()
+        detail = tail[-1] if tail else f"exit {result.returncode}"
+        log(f"FAIL: {path.name}: {detail}")
+        return None
+
+    name = _parse_output_name(result.stdout)
+    out = RESEARCH / name if name else None
+    if out and out.exists():
+        path.unlink(missing_ok=True)
+        return out
+    log(f"FAIL: {path.name}: conversion reported success but no output file")
+    return None
+
+
+def _move_failed(path):
+    try:
+        FAILED.mkdir(parents=True, exist_ok=True)
+        dest = _unique_path(FAILED, path.name)
+        path.rename(dest)
+        log(f"FAIL: {path.name} moved to {dest.name} after {MAX_ATTEMPTS} attempts")
+        _note_result(path.name, "failed", dest.name)
+    except Exception as e:
+        log(f"Could not move {path.name} to Inbox_Failed: {e}")
+
+
+def process_file(path):
+    out = _convert(path)
+    if out is not None:
+        log(f"OK: {path.name} -> {out.name}")
+        _note_result(path.name, "ok", out.name)
+        return True
+    return False
+
+
+def _process_pending(now):
+    """One sweep of the pending queue. Returns the number of files handled."""
+    handled = 0
+    for p, info in list(_pending.items()):
+        if not p.exists():
+            _pending.pop(p, None)
+            continue
+        if now < info["ready_at"]:
+            continue
+        if not _stable_size(p):
+            info["ready_at"] = now + 1.0
+            continue
+        _pending.pop(p, None)
+        handled += 1
+        if process_file(p):
+            continue
+        info["attempts"] += 1
+        if info["attempts"] < MAX_ATTEMPTS:
+            info["ready_at"] = now + RETRY_DELAY * info["attempts"]
+            _pending[p] = info
+            log(f"Retry {info['attempts']}/{MAX_ATTEMPTS} in "
+                f"{int(RETRY_DELAY * info['attempts'])}s: {p.name}")
+        else:
+            _move_failed(p)
+    return handled
+
+
+def _backlog():
+    """Pick up files that were already in the inbox before we started."""
+    try:
+        for p in INBOX.rglob("*"):
+            if p.is_file():
+                _touch(p)
+    except Exception as e:
+        log(f"Backlog scan error: {e}")
+    if _pending:
+        log(f"Backlog: {len(_pending)} file(s) already in inbox")
+
 
 class InboxHandler(FileSystemEventHandler):
-    def __init__(self):
-        self.pending = {}
-
-    def _touch(self, p):
-        p = Path(p)
-        ext = p.suffix.lower()
-        # Skip hidden files and macOS metadata
-        if p.name.startswith(".") or p.name == ".DS_Store":
-            return
-        if ext in ALL_EXTS:
-            self.pending[p] = time.time()
-
     def on_created(self, e):
         if not e.is_directory:
-            self._touch(e.src_path)
-            print(f"[+] New: {Path(e.src_path).name}")
+            _touch(e.src_path)
 
     def on_moved(self, e):
         if not e.is_directory:
-            self._touch(e.dest_path)
+            _touch(e.dest_path)
 
     def on_modified(self, e):
         if not e.is_directory:
-            self._touch(e.src_path)
+            _touch(e.src_path)
 
-def process_file(file_path: Path):
-    ext = file_path.suffix.lower()
-
-    # Detect Inbox subdirectory for output format routing
-    args = [sys.executable, str(CONVERT), str(file_path)]
-    try:
-        parent = file_path.resolve().parent
-        # If file is in .../Inbox/2docx/, add --docx flag
-        if parent.name.lower() == "2docx":
-            args.append("--docx")
-
-        print(f"[~] Converting: {file_path.name}")
-        if ext in ALL_EXTS:
-            if ext in {".docx", ".xlsx", ".pptx", ".html", ".csv", ".rtf"} \
-               and parent.name.lower() != "2docx":
-                # Office docs → markitdown (faster than convert_pdf.py for these)
-                result = subprocess.run(
-                    ["markitdown", str(file_path)],
-                    capture_output=True, text=True, timeout=120,
-                    env={**os.environ, "PYTHONIOENCODING": "utf-8"}
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    (RESEARCH / f"{file_path.stem}.md").write_text(
-                        result.stdout, encoding="utf-8")
-                    file_path.unlink(missing_ok=True)
-                    print(f"[✓] {file_path.stem}.md")
-                    return True
-                print(f"  markitdown failed ({result.returncode}), trying convert_pdf.py...")
-                # Fall through to convert_pdf.py
-
-            result = subprocess.run(args, timeout=700)
-            if result.returncode == 0:
-                file_path.unlink(missing_ok=True)
-                print(f"[✓] {file_path.stem}.md")
-                return True
-
-    except subprocess.TimeoutExpired:
-        print(f"[-] Timeout: {file_path.name}")
-    except Exception as e:
-        print(f"[-] Error: {file_path.name}: {e}")
-
-    # Move to failed
-    try:
-        file_path.rename(FAILED / file_path.name)
-    except Exception:
-        pass
-    return False
 
 def main():
-    INBOX.mkdir(parents=True, exist_ok=True)
-    RESEARCH.mkdir(parents=True, exist_ok=True)
-    FAILED.mkdir(parents=True, exist_ok=True)
+    for d in (INBOX, RESEARCH, FAILED):
+        d.mkdir(parents=True, exist_ok=True)
+
+    if PID_FILE:
+        try:
+            tmp = PID_FILE.with_name(PID_FILE.name + ".tmp")
+            tmp.write_text(str(os.getpid()))
+            tmp.rename(PID_FILE)
+        except Exception as e:
+            log(f"WARNING: could not write PID file: {e}")
+
+    _state["started"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    log(f"mark-dawn watcher started (PID {os.getpid()})")
+    log(f"Watching: {INBOX} (recursive)")
+    log(f"Output:   {RESEARCH}")
+    log(f"Failed:   {FAILED}")
+    _save_state()
 
     handler = InboxHandler()
     observer = Observer()
-    observer.schedule(handler, str(INBOX), recursive=True)  # watch subdirs
+    observer.schedule(handler, str(INBOX), recursive=True)
     observer.start()
 
-    print(f"[*] mark-dawn watcher started")
-    print(f"[*] Watching: {INBOX} (recursive)")
-    print(f"[*] Output:   {RESEARCH}")
-    print(f"[*] Failed:   {FAILED}")
+    _backlog()
 
     try:
         while True:
             time.sleep(1.0)
-            now = time.time()
-            ready = [p for p, t in list(handler.pending.items())
-                     if now - t >= DEBOUNCE and p.exists()]
-            for p in ready:
-                handler.pending.pop(p, None)
-                process_file(p)
+            _process_pending(time.time())
+            _save_state()
     except KeyboardInterrupt:
-        print("\n[*] Stopping watcher...")
+        print("\n[*] Stopping watcher...", flush=True)
         observer.stop()
+
     observer.join()
+    _state["stopped"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    _save_state()
+
 
 if __name__ == "__main__":
     main()

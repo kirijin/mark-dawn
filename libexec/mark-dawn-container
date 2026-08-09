@@ -23,11 +23,19 @@ mkdir -p "$LOG_DIR" "$CONFIG_DIR"
 ARCH="arm64"
 [[ "$(uname -m)" == "x86_64" ]] && ARCH="amd64"
 
+# shellcheck disable=SC1090  # dynamic config source by design
 # --- Config ---------------------------------------------------------------
 load_config() {
     [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+    IMAGE="${MARK_DAWN_IMAGE:-${image:-$IMAGE}}"
     DATA_DIR="${MARK_DAWN_DATA_DIR:-${data_dir:-$DATA_DIR}}"
     LANGS="${MARK_DAWN_LANGS:-${langs:-$LANGS}}"
+}
+
+# The pipeline reads these inside the container; without them watcher/convert
+# fall back to $HOME/Documents (root) which is not volume-mounted.
+container_env() {
+    echo "-e MARK_DAWN_INBOX_DIR=/data/Inbox -e MARK_DAWN_OUT_DIR=/data/Research -e MARK_DAWN_FAILED_DIR=/data/Inbox_Failed"
 }
 
 save_config() {
@@ -67,8 +75,10 @@ cmd_start() {
     fi
 
     log "Starting mark-dawn watcher (Apple Container)..."
+    # shellcheck disable=SC2046  # volumes()/container_env() emit multi-arg flags
     container run -d --rm --name "$CONTAINER_NAME" \
         $(volumes) \
+        $(container_env) \
         -e "MARK_DAWN_LANGS=$LANGS" \
         --arch "linux/$ARCH" \
         "$IMAGE" watcher
@@ -105,8 +115,10 @@ cmd_convert() {
 
     log "Converting: $(basename "$file_path")"
     ensure_dirs 2>/dev/null || true
+    # shellcheck disable=SC2046  # volumes()/container_env() emit multi-arg flags
     container run --rm \
         $(volumes) \
+        $(container_env) \
         -v "$(dirname "$file_path"):/input" \
         -e "MARK_DAWN_LANGS=$LANGS" \
         --arch "linux/$ARCH" \
@@ -173,6 +185,12 @@ cmd_install_service() {
         <string>${DATA_DIR}/Inbox_Failed:/data/Inbox_Failed</string>
         <string>-e</string>
         <string>MARK_DAWN_LANGS=${LANGS}</string>
+        <string>-e</string>
+        <string>MARK_DAWN_INBOX_DIR=/data/Inbox</string>
+        <string>-e</string>
+        <string>MARK_DAWN_OUT_DIR=/data/Research</string>
+        <string>-e</string>
+        <string>MARK_DAWN_FAILED_DIR=/data/Inbox_Failed</string>
         <string>--arch</string>
         <string>linux/${ARCH}</string>
         <string>${IMAGE}</string>

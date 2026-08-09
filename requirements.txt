@@ -1,6 +1,7 @@
 # mark-dawn pinned dependencies
-# Generated from PyPI — update via: pip freeze > requirements.txt
-# Security: run `mark-dawn update` for latest CVEs in a running install
+# Shared by the container build, the macOS brew installer, and the Windows
+# installer — every platform runs the same versions. Bump pins deliberately:
+# `mark-dawn update` reinstalls whichever pins are current in the repo.
 
 pymupdf4llm==1.28.0
 markitdown[all]==0.1.6

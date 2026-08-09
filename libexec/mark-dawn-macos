@@ -7,7 +7,7 @@
 # ============================================================================
 set -euo pipefail
 
-INSTALL_DIR="${MARK_DAWN_INSTALL_DIR:-/opt/mark-dawn}"
+INSTALL_DIR="${MARK_DAWN_INSTALL_DIR:-$HOME/Library/Application Support/mark-dawn}"
 VENV_DIR="$INSTALL_DIR/venv"
 CONVERTER="$VENV_DIR/bin/convert_pdf.py"
 WATCHER="$VENV_DIR/bin/watcher.py"
@@ -24,6 +24,7 @@ LANGS="${MARK_DAWN_LANGS:-eng+rus+fra+deu+chi_sim+jpn}"
 
 mkdir -p "$LOG_DIR" "$CONFIG_DIR"
 
+# shellcheck disable=SC1090  # dynamic config source by design
 # --- Config ---------------------------------------------------------------
 load_config() {
     [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
@@ -43,6 +44,19 @@ EOF
 log()   { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 err()   { echo "$*" >&2; }
 
+# The pipeline reads these; direct starts (nohup) must export them because
+# the Python defaults point at /usr/local/bin which the brew install doesn't use.
+export_pipeline_env() {
+    export MARK_DAWN_INBOX_DIR="$DATA_DIR/Inbox"
+    export MARK_DAWN_OUT_DIR="$DATA_DIR/Research"
+    export MARK_DAWN_FAILED_DIR="$DATA_DIR/Inbox_Failed"
+    export MARK_DAWN_CONVERTER="$CONVERTER"
+    export MARK_DAWN_STATE_FILE="$LOG_DIR/state.json"
+    export MARK_DAWN_LANGS="$LANGS"
+    # venv/bin must precede PATH so the markitdown/ocrmypdf subprocesses resolve.
+    export PATH="$VENV_DIR/bin:$PATH"
+}
+
 ensure_dirs() {
     mkdir -p "$DATA_DIR/Inbox" "$DATA_DIR/Research" "$DATA_DIR/Inbox_Failed" \
              "$DATA_DIR/Inbox/2md" "$DATA_DIR/Inbox/2docx"
@@ -57,6 +71,7 @@ cmd_start() {
         exit 0
     fi
     log "Starting mark-dawn watcher..."
+    export_pipeline_env
     nohup "$WATCHER" >> "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     sleep 1
@@ -79,11 +94,10 @@ cmd_stop() {
     pid=$(cat "$PID_FILE")
     log "Stopping watcher (PID $pid)..."
     kill "$pid" 2>/dev/null || true
-    for i in 1 2 3 4 5; do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            break
-        fi
+    n=0
+    while [[ $n -lt 5 ]] && kill -0 "$pid" 2>/dev/null; do
         sleep 1
+        n=$((n + 1))
     done
     kill -9 "$pid" 2>/dev/null || true
     rm -f "$PID_FILE"
@@ -104,7 +118,7 @@ cmd_convert() {
     want_docx=""
     for a in "$@"; do [[ "$a" == "--docx" ]] && want_docx="--docx"; done
     ensure_dirs 2>/dev/null || true
-    export MARK_DAWN_LANGS="$LANGS"
+    export_pipeline_env
     "$CONVERTER" "$file_path" $want_docx
 }
 
@@ -128,21 +142,50 @@ cmd_status() {
     else
         echo "Watcher:   STOPPED"
     fi
+    if [[ -f "$LOG_DIR/state.json" ]]; then
+        echo ""
+        python3 - "$LOG_DIR/state.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"Pending:   {d.get('pending', 0)}")
+print(f"Updated:   {d.get('updated', '-')}")
+for r in d.get('last', []):
+    print(f"  {r.get('time', '?')} {r.get('status', '?'):6} {r.get('file', '?')} -> {r.get('out', '?')}")
+PY
+    fi
     echo ""
-    echo "Inbox contents:"
-    ls -1 "$DATA_DIR/Inbox" 2>/dev/null | head -10 || echo "  (empty)"
-    echo "Research contents:"
-    ls -1 "$DATA_DIR/Research" 2>/dev/null | head -10 || echo "  (empty)"
+    echo "Inbox contents (newest first):"
+    list_or_empty "$DATA_DIR/Inbox"
+    echo "Research contents (newest first):"
+    list_or_empty "$DATA_DIR/Research"
+}
+
+list_or_empty() {
+    local d="$1"
+    if [[ -d "$d" ]] && [[ -n "$(ls -A "$d" 2>/dev/null)" ]]; then
+        ls -1t "$d" | head -5
+    else
+        echo "  (empty)"
+    fi
 }
 
 cmd_update() {
     log "Updating mark-dawn packages..."
+    # Refresh code + pinned requirements from the repo, then reinstall pins.
+    # (A pinned -r install is a no-op unless the repo bumped the pins.)
+    REPO_URL="https://raw.githubusercontent.com/kirijin/mark-dawn/main"
+    if command -v curl &>/dev/null; then
+        curl -fsSL "$REPO_URL/requirements.txt" -o "$INSTALL_DIR/requirements.txt" 2>/dev/null
+        curl -fsSL "$REPO_URL/watcher.py"       -o "$WATCHER" 2>/dev/null
+        curl -fsSL "$REPO_URL/convert_pdf.py"   -o "$CONVERTER" 2>/dev/null
+        curl -fsSL "$REPO_URL/docx_styler.py"   -o "$VENV_DIR/bin/docx_styler.py" 2>/dev/null
+        chmod +x "$WATCHER" "$CONVERTER" "$VENV_DIR/bin/docx_styler.py" 2>/dev/null || true
+    fi
     echo "Packages with newer versions available:"
     "$VENV_DIR/bin/pip" list --outdated 2>/dev/null | tail -n +3 || true
     echo ""
     "$VENV_DIR/bin/pip" install --upgrade pip 2>/dev/null || true
-    "$VENV_DIR/bin/pip" install --upgrade \
-        pymupdf4llm markitdown[all] watchdog python-docx openpyxl python-pptx 2>&1 | tee -a "$LOG_FILE"
+    "$VENV_DIR/bin/pip" install --no-cache-dir --upgrade -r "$INSTALL_DIR/requirements.txt" 2>&1 | tee -a "$LOG_FILE"
     log "OK Packages updated"
     cmd_restart
 }
@@ -150,6 +193,10 @@ cmd_update() {
 cmd_install_service() {
     ensure_dirs
     mkdir -p "$(dirname "$PLIST_PATH")"
+    # launchd runs agents with a minimal PATH; invoke the venv python directly
+    # (the shebang would resolve to /usr/bin/python3, which lacks the deps)
+    # and give the process a PATH that includes venv + Homebrew binaries.
+    BREW_PREFIX="$(brew --prefix 2>/dev/null || echo /opt/homebrew)"
     # Generate plist from template with real paths substituted
     /usr/libexec/PlistBuddy -c "Clear dict" "$PLIST_PATH" 2>/dev/null || true
     cat > "$PLIST_PATH" <<PLIST
@@ -162,10 +209,13 @@ cmd_install_service() {
     <string>com.mark-dawn.watcher</string>
     <key>ProgramArguments</key>
     <array>
+        <string>${VENV_DIR}/bin/python</string>
         <string>${WATCHER}</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
+        <key>PATH</key>
+        <string>${VENV_DIR}/bin:${BREW_PREFIX}/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>MARK_DAWN_INBOX_DIR</key>
         <string>${DATA_DIR}/Inbox</string>
         <key>MARK_DAWN_OUT_DIR</key>
@@ -176,6 +226,8 @@ cmd_install_service() {
         <string>${CONVERTER}</string>
         <key>MARK_DAWN_LANGS</key>
         <string>${LANGS}</string>
+        <key>MARK_DAWN_STATE_FILE</key>
+        <string>${LOG_DIR}/state.json</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

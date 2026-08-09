@@ -8,7 +8,9 @@ set -euo pipefail
 
 REPO_URL="https://raw.githubusercontent.com/kirijin/mark-dawn/main"
 LAUNCHER_URL="$REPO_URL/libexec/mark-dawn-macos"
-INSTALL_DIR="${MARK_DAWN_INSTALL_DIR:-/opt/mark-dawn}"
+# Default is user-writable (no root needed, matching the README promise).
+# /opt is root-owned on macOS and would fail for non-admin users.
+INSTALL_DIR="${MARK_DAWN_INSTALL_DIR:-$HOME/Library/Application Support/mark-dawn}"
 BIN_DIR="$HOME/.local/bin"
 LAUNCHER_PATH="$BIN_DIR/mark-dawn"
 VENV_DIR="$INSTALL_DIR/venv"
@@ -16,7 +18,7 @@ CONFIG_DIR="$HOME/Library/Application Support/mark-dawn"
 CONFIG_FILE="$CONFIG_DIR/config"
 STATE_FILE="$CONFIG_DIR/.install-state.json"
 DEFAULT_LANGS="eng+rus"
-VERSION="1.0.0"
+VERSION="2.3.0"
 
 # --- Parse arguments ---------------------------------------------------------
 ARG_LANGS=""
@@ -50,7 +52,7 @@ mark-dawn macOS installer (pre-26) — usage:
 Options:
   --langs LANG1+LANG2  OCR languages (default: eng+rus, interactive on first install)
   --data-dir PATH      Data directory (default: ~/Documents)
-  --install-dir PATH   Python venv location (default: /opt/mark-dawn)
+  --install-dir PATH   Python venv location (default: ~/Library/Application Support/mark-dawn)
   --skip-brew          Skip brew install (use existing packages)
   --uninstall          Remove mark-dawn and its venv
   --force              Re-download even if installed
@@ -78,7 +80,6 @@ load_state() {
     if [[ -f "$STATE_FILE" ]]; then
         STATE_LANGS=$(sed -n 's/.*"langs": *"\([^"]*\)".*/\1/p' "$STATE_FILE" 2>/dev/null || echo "")
         STATE_VERSION=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$STATE_FILE" 2>/dev/null || echo "")
-        STATE_DATA_DIR=$(sed -n 's/.*"data_dir": *"\([^"]*\)".*/\1/p' "$STATE_FILE" 2>/dev/null || echo "")
     fi
 }
 
@@ -211,9 +212,6 @@ if ! $ARG_SKIP_BREW; then
     step "4/7" "Installing system packages via brew..."
     info "ocrmypdf + tesseract-lang + djvulibre + pandoc"
 
-    BREW_UPGRADE=""
-    $ARG_FORCE && BREW_UPGRADE="--overwrite"
-
     if $IS_REINSTALL && ! $ARG_FORCE; then
         # Quick check: are critical tools present?
         MISSING=""
@@ -260,7 +258,9 @@ else
     PY_VER=$("$PYTHON" --version 2>&1)
     info "Using $PY_VER"
 
-    mkdir -p "$INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR" || {
+        fail "Cannot create install dir '$INSTALL_DIR'. It must be user-writable — the default (inside your home) needs no root; override with --install-dir."
+    }
     "$PYTHON" -m venv "$VENV_DIR"
     ok "Virtualenv created at $VENV_DIR"
 fi
@@ -268,7 +268,11 @@ fi
 # --- [6/7] Install Python packages -------------------------------------------
 step "6/7" "Installing Python packages..."
 
-PIP_PACKAGES=("pymupdf4llm" "markitdown[all]" "watchdog" "python-docx" "openpyxl" "python-pptx")
+# Download the pinned requirement set (shared with the container build and
+# the Windows installer) so every platform runs the same versions.
+if ! curl -fsSL "$REPO_URL/requirements.txt" -o "$INSTALL_DIR/requirements.txt" 2>/dev/null; then
+    fail "Could not download requirements.txt from $REPO_URL"
+fi
 
 if $IS_REINSTALL && ! $ARG_FORCE; then
     # Quick verify: check if imports work
@@ -277,14 +281,14 @@ if $IS_REINSTALL && ! $ARG_FORCE; then
     else
         info "Some packages missing — reinstalling..."
         "$VENV_DIR/bin/pip" install --upgrade pip 2>&1 | tail -1 || true
-        "$VENV_DIR/bin/pip" install --no-cache-dir "${PIP_PACKAGES[@]}" 2>&1 | tail -3 || {
+        "$VENV_DIR/bin/pip" install --no-cache-dir -r "$INSTALL_DIR/requirements.txt" 2>&1 | tail -3 || {
             fail "pip install failed. Check network."
         }
         ok "Python packages installed"
     fi
 else
     "$VENV_DIR/bin/pip" install --upgrade pip 2>&1 | tail -1 || true
-    "$VENV_DIR/bin/pip" install --no-cache-dir "${PIP_PACKAGES[@]}" 2>&1 | tail -3 || {
+    "$VENV_DIR/bin/pip" install --no-cache-dir -r "$INSTALL_DIR/requirements.txt" 2>&1 | tail -3 || {
         fail "pip install failed. Check network."
     }
     ok "Python packages installed"
@@ -325,8 +329,8 @@ else
     fail "Neither curl nor wget found."
 fi
 
-# Set the install dir in the launcher
-sed -i '' "s|MARK_DAWN_INSTALL_DIR:-/opt/mark-dawn|MARK_DAWN_INSTALL_DIR:-${INSTALL_DIR}|" "$LAUNCHER_PATH.tmp" 2>/dev/null || true
+# Set the install dir in the launcher (robust to the default changing)
+sed -i '' "s|MARK_DAWN_INSTALL_DIR:-[^}]*|MARK_DAWN_INSTALL_DIR:-${INSTALL_DIR}|" "$LAUNCHER_PATH.tmp" 2>/dev/null || true
 
 mv "$LAUNCHER_PATH.tmp" "$LAUNCHER_PATH"
 chmod +x "$LAUNCHER_PATH"
@@ -384,6 +388,10 @@ VFAIL=0
 "$VENV_DIR/bin/python" -c "import pymupdf4llm" 2>/dev/null && ok "pymupdf4llm importable" || warn "pymupdf4llm import failed"
 command -v tesseract &>/dev/null && ok "Tesseract available" || warn "tesseract not in PATH"
 command -v pandoc &>/dev/null && ok "pandoc available" || warn "pandoc not in PATH"
+
+if [[ "$VFAIL" -gt 0 ]]; then
+    fail "Installation verification failed (see warnings above)"
+fi
 
 # --- Done --------------------------------------------------------------------
 printf "\n${C_GREEN}${C_BOLD}=== mark-dawn installed ===${C_RESET}\n\n"

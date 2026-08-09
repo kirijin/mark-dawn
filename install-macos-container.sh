@@ -15,7 +15,7 @@ CONFIG_DIR="$HOME/Library/Application Support/mark-dawn"
 CONFIG_FILE="$CONFIG_DIR/config"
 STATE_FILE="$CONFIG_DIR/.install-state.json"
 DEFAULT_LANGS="eng+rus"
-VERSION="1.0.0"
+VERSION="2.3.0"
 
 # --- Parse arguments ---------------------------------------------------------
 ARG_LANGS=""
@@ -70,7 +70,6 @@ load_state() {
     if [[ -f "$STATE_FILE" ]]; then
         STATE_LANGS=$(sed -n 's/.*"langs": *"\([^"]*\)".*/\1/p' "$STATE_FILE" 2>/dev/null || echo "")
         STATE_VERSION=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$STATE_FILE" 2>/dev/null || echo "")
-        STATE_DATA_DIR=$(sed -n 's/.*"data_dir": *"\([^"]*\)".*/\1/p' "$STATE_FILE" 2>/dev/null || echo "")
     fi
 }
 
@@ -273,6 +272,10 @@ VFAIL=0
 [[ -x "$LAUNCHER_PATH" ]] && ok "Launcher executable" || { warn "Launcher missing"; VFAIL=1; }
 [[ -f "$CONFIG_FILE" ]] && ok "Config present" || { warn "Config missing"; VFAIL=1; }
 $CONTAINER_CMD images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -qF "$IMAGE" && ok "Image cached" || warn "Image not cached"
+
+if [[ "$VFAIL" -gt 0 ]]; then
+    fail "Installation verification failed (see warnings above)"
+fi
 
 # --- Done --------------------------------------------------------------------
 printf "\n${C_GREEN}${C_BOLD}=== mark-dawn installed ===${C_RESET}\n\n"

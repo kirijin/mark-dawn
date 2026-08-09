@@ -31,12 +31,18 @@ RUN chmod +x /usr/local/bin/*.py /usr/local/bin/*.sh
 
 WORKDIR /workspace
 
+# Pipeline defaults — launchers override these with their own -e flags, but a
+# bare `docker run <image> watcher` must also watch/write the mounted dirs.
+ENV MARK_DAWN_INBOX_DIR=/data/Inbox \
+    MARK_DAWN_OUT_DIR=/data/Research \
+    MARK_DAWN_FAILED_DIR=/data/Inbox_Failed
+
 LABEL org.opencontainers.image.title="mark-dawn" \
       org.opencontainers.image.description="Universal Document to Markdown Pipeline" \
       org.opencontainers.image.source="https://github.com/kirijin/mark-dawn" \
       org.opencontainers.image.licenses="MIT"
 
 USER root
-RUN mkdir -p /workspace/tmp && chmod -R 777 /workspace/tmp
+RUN mkdir -p /workspace/tmp && chmod 700 /workspace/tmp
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["watcher"]
