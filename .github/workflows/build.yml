@@ -119,8 +119,9 @@ jobs:
 
       - name: Run Python test suite
         run: |
-          echo "Installing test deps (python-docx is the only real dependency tests need)..."
-          pip install pytest python-docx Pillow
+          echo "Installing test deps from requirements.txt (pinned)..."
+          pip install pytest
+          pip install -r requirements.txt
           echo "Running pytest..."
           python3 -m pytest tests/ -q
           echo "✓ Test suite passed"
