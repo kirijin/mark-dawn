@@ -178,18 +178,62 @@ def _build_from_md(doc, md_text):
             i += 1
             continue
 
-        # ── Bullet list ──
-        if re.match(r'^[\s]*[-*+]\s+', stripped):
-            text = re.sub(r'^[\s]*[-*+]\s+', '', stripped)
-            _add_paragraph(doc, text, style='List Bullet')
+        # ── Blockquote ──
+        if stripped.startswith('>'):
+            text = stripped.lstrip('>').strip()
+            para = _add_paragraph(doc, text)
+            try:
+                para.paragraph_format.left_indent = Cm(1.27)
+            except Exception:
+                pass
+            for run in para.runs:
+                run.italic = True
             i += 1
             continue
 
-        # ── Numbered list ──
-        nm = re.match(r'^[\s]*\d+[.)]\s+(.+)$', stripped)
+        # ── Image ──
+        im = re.match(r'^!\[([^\]]*)\]\(([^)]+)\)$', stripped)
+        if im:
+            alt, src = im.group(1), im.group(2)
+            added = False
+            try:
+                if not src.startswith(('http://', 'https://')):
+                    ipath = Path(src)
+                    if ipath.is_file() and hasattr(doc, 'add_picture'):
+                        doc.add_picture(str(ipath))
+                        added = True
+            except Exception:
+                added = False
+            if not added:
+                _add_paragraph(doc, "[image: %s]" % (alt or src))
+            i += 1
+            continue
+
+        # ── Bullet list (with nested indentation) ──
+        bm = re.match(r'^(\s*)[-*+]\s+(.+)$', line)
+        if bm:
+            indent = len(bm.group(1))
+            text = bm.group(2)
+            para = _add_paragraph(doc, text, style='List Bullet')
+            if indent:
+                try:
+                    para.paragraph_format.left_indent = Cm(1.27 + 0.63 * (indent // 2))
+                except Exception:
+                    pass
+            i += 1
+            continue
+
+        # ── Numbered list (with nested indentation) ──
+        nm = re.match(r'^(\s*)\d+[.)]\s+(.+)$', line)
         if nm:
-            text = nm.group(1)
-            _add_paragraph(doc, text, style='List Number')
+            indent = len(nm.group(1))
+            text = nm.group(2)
+            para = _add_paragraph(doc, text, style='List Number')
+            if indent:
+                try:
+                    para.paragraph_format.left_indent = Cm(1.27 + 0.63 * (indent // 2))
+                except Exception:
+                    pass
             i += 1
             continue
 
@@ -224,12 +268,23 @@ def _add_inline_run(para, text):
     a literal part can't be mistaken for markup (e.g. `****` stays literal,
     `**a*b**` is not stripped into bogus bold).
     """
-    pattern = re.compile(r'\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*')
+    pattern = re.compile(r'\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*|\[[^\]]+\]\([^)]+\)')
     pos = 0
     for m in pattern.finditer(text):
         if m.start() > pos:
             para.add_run(text[pos:m.start()])
         part = m.group(0)
+        if part.startswith('[') and '](' in part:
+            # [text](url) -> text (url)
+            txt = part[1:part.index(']')]
+            url = part[part.index('(')+1:-1]
+            run = para.add_run(txt)
+            if url:
+                r2 = para.add_run(" (%s)" % url)
+                r2.italic = True
+                r2.font.size = Pt(9)
+            pos = m.end()
+            continue
         if part.startswith('**'):
             run = para.add_run(part[2:-2])
             run.bold = True

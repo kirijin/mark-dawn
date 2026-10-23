@@ -51,6 +51,11 @@ jobs:
             "libexec/mark-dawn-macos"
             "install.ps1"
             "mark-dawn.ps1"
+            "windows/00-bootstrap.ps1"
+            "windows/10-steps.ps1"
+            "windows/20-commands.ps1"
+            "windows/30-templates.ps1"
+            "windows/40-ui.ps1"
             "requirements.txt"
             "README.md"
           )
@@ -74,7 +79,8 @@ jobs:
       - name: Validate PowerShell syntax (both installers)
         shell: pwsh
         run: |
-          foreach ($f in @("install.ps1", "mark-dawn.ps1")) {
+          $files = @("install.ps1", "mark-dawn.ps1") + (Get-ChildItem -Path "windows" -Filter "*.ps1" -ErrorAction SilentlyContinue | ForEach-Object { "windows/$($_.Name)" })
+          foreach ($f in $files) {
             Write-Host "Validating PowerShell syntax for $f..."
             $content = Get-Content -Path $f -Raw
             $errors = $null
@@ -114,10 +120,31 @@ jobs:
       - name: Run Python test suite
         run: |
           echo "Installing test deps (python-docx is the only real dependency tests need)..."
-          pip install pytest python-docx
+          pip install pytest python-docx Pillow
           echo "Running pytest..."
           python3 -m pytest tests/ -q
           echo "✓ Test suite passed"
+
+  validate-windows:
+    runs-on: windows-latest
+    name: Validate PowerShell on Windows
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Parse PowerShell syntax
+        shell: pwsh
+        run: |
+          $files = @("install.ps1", "mark-dawn.ps1") + (Get-ChildItem -Path "windows" -Filter "*.ps1" -ErrorAction SilentlyContinue | ForEach-Object { "windows/$($_.Name)" })
+          foreach ($f in $files) {
+            $content = Get-Content -Path $f -Raw
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseInput($content, [ref]$null, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Host "$($_.Message) @ line $($_.Extent.StartLineNumber)" }
+              exit 1
+            }
+            Write-Host "OK: $f"
+          }
 
   build-and-push:
     needs: validate

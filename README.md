@@ -74,6 +74,7 @@ mark-dawn start                 # Background watcher — watches ~/Documents/Inb
 mark-dawn stop                  # Stop the watcher
 mark-dawn convert file.pdf      # Convert one file, get result in ~/Documents/Research/
 mark-dawn convert scan.djvu --docx   # Convert to DOCX
+mark-dawn convert scan.pdf --langs eng+rus  # OCR with specific languages
 mark-dawn logs                  # Follow watcher logs (Ctrl+C to exit)
 mark-dawn status                # Show runtime state + directory contents
 mark-dawn update                # Pull latest image / update Python packages

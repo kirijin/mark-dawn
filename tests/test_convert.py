@@ -36,6 +36,16 @@ finally:
 convert_pdf.fitz        = _fake_fitz
 convert_pdf.pymupdf4llm = _fake_pymu
 
+# Restore real modules in sys.modules so other test files (test_golden,
+# test_integration) can import the genuine dependencies. convert_pdf's bound
+# attributes above keep using the mocks for this file's tests.
+for _name, _real in (("fitz", None), ("pymupdf4llm", None),
+                     ("PIL", None), ("docx_styler", _real_docx_styler)):
+    if _real is not None:
+        sys.modules[_name] = _real
+    else:
+        sys.modules.pop(_name, None)
+
 
 # ---------------------------------------------------------------------------
 #  Fixtures
@@ -142,7 +152,7 @@ class TestOcrPdf:
             # pymupdf4llm called on the ocr output
             assert to_md.called
             # output written
-            assert out.read_text() == "# Hello"
+            assert out.read_text() == "# Hello\n"
 
             out.unlink(missing_ok=True)
 
@@ -187,7 +197,7 @@ class TestHandlePdf:
             convert_pdf._handle_pdf(Path("/tmp/dummy.pdf"), out)
 
             assert to_md.called
-            assert out.read_text() == "# Digital"
+            assert out.read_text() == "# Digital\n"
             out.unlink(missing_ok=True)
 
     def test_scanned_path(self, fitz_mocks):
@@ -214,20 +224,14 @@ class TestHandlePdf:
         assert ocr.called
         assert str(ocr.call_args.args[0]).endswith("_rendered.pdf") or ocr.call_args.args[0] == Path("/tmp/_rendered.pdf")
 
-    def test_scanned_zero_pages(self, fitz_mocks):
-        """rendered == 0 → _ocr_pdf called with original path (no rendering)."""
-        fitz_mocks["src_doc"].pages = []  # n = 0 → loop never runs → out_doc empty
+    def test_empty_pdf_exits(self, fitz_mocks):
+        """An empty (zero-page) PDF is rejected with exit code 1 instead of
+        being fed to ocrmypdf."""
+        fitz_mocks["src_doc"].pages = []  # n = 0
         out = Path("/tmp/md-test-out/empty.md")
-
-        with (
-            mock.patch.object(convert_pdf, "_ocr_pdf") as ocr,
-            mock.patch.object(convert_pdf, "tempfile"),
-        ):
+        with pytest.raises(SystemExit) as exc:
             convert_pdf._handle_pdf(Path("/tmp/dummy.pdf"), out)
-
-        # _ocr_pdf called with original file_path, not a temp
-        assert ocr.called
-        assert str(ocr.call_args.args[0]) == "/tmp/dummy.pdf"
+        assert exc.value.code == 1
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +353,13 @@ class TestMain:
         cls._tests_dir.mkdir(parents=True, exist_ok=True)
         for ext in [".pdf", ".djvu", ".jpg", ".png", ".tiff", ".webp",
                     ".docx", ".xlsx", ".pptx", ".html", ".csv", ".rtf"]:
-            (cls._tests_dir / f"doc{ext}").touch()
+            p = cls._tests_dir / f"doc{ext}"
+            if ext == ".pdf":
+                p.write_bytes(b"%PDF-1.4\n")
+            elif ext == ".djvu":
+                p.write_bytes(b"AT&TFORM\x00\x00\x00\x00DJVU")
+            else:
+                p.write_bytes(b"\x00")
 
     @mock.patch.object(convert_pdf, "_handle_pdf")
     def test_routes_pdf(self, h):
@@ -437,9 +447,10 @@ class TestMain:
         assert exc.value.code == 1
 
     def test_busy_exit2(self):
-        """A live lock for the same stem → exit 2 (retryable), never exit 0."""
-        lock = convert_pdf.OUT_DIR / ".doc.lock"
-        lock.write_text("99999")
+        """A live lock for the same input → exit 2 (retryable), never exit 0."""
+        (self._tests_dir / "doc.pdf").write_bytes(b"%PDF-1.4\n")
+        lock = convert_pdf._lock_path(self._tests_dir / "doc.pdf")
+        lock.write_text(str(os.getpid()))
         try:
             with (
                 mock.patch.object(sys, "argv",

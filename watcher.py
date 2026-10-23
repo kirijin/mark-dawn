@@ -16,7 +16,8 @@ Env schema (same one every launcher passes):
   MARK_DAWN_PID          pid file to write    (Windows launcher relies on it)
   MARK_DAWN_STATE_FILE   JSON status file     (the `status` command reads it)
 """
-import os, sys, time, json, subprocess
+import os, sys, time, json, subprocess, signal, threading, http.server, socketserver
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -41,9 +42,15 @@ SUPPORTED = {".pdf", ".djvu", ".tiff", ".tif", ".jpeg", ".jpg", ".png",
 
 # path -> {"seen": float, "attempts": int, "ready_at": float}
 _pending = {}
+# restored attempt counts from a previous (crashed) run
+_restored = {}
+_pending_lock = threading.Lock()
+_state_lock = threading.Lock()
+_inflight = set()
+_executor = None
 
 _state = {"pid": os.getpid(), "started": "", "inbox": str(INBOX),
-          "pending": 0, "updated": "", "last": []}
+          "pending": 0, "updated": "", "last": [], "status": "idle", "current": ""}
 
 
 def log(msg):
@@ -54,13 +61,22 @@ def log(msg):
 def _save_state():
     if not STATE_FILE:
         return
-    try:
-        _state["pending"] = len(_pending)
-        _state["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(json.dumps(_state, indent=1), encoding="utf-8")
-    except Exception:
-        pass
+    with _state_lock:
+        try:
+            _state["pending"] = len(_pending)
+            _state["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            _state["queue"] = [
+                {"path": str(p), "seen": info["seen"], "attempts": info["attempts"],
+                 "ready_at": info["ready_at"]}
+                for p, info in _pending.items()
+            ]
+            STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
+            tmp.write_text(json.dumps(_state, indent=1), encoding="utf-8")
+            os.replace(tmp, STATE_FILE)
+        except Exception:
+            pass
+        return
 
 
 def _note_result(name, status, out):
@@ -178,6 +194,28 @@ def process_file(path):
     return False
 
 
+def _worker(p, info):
+    """Process one ready file in a worker thread; handle retry/busy/failed."""
+    global _pending
+    result = process_file(p)
+    if result is True:
+        return
+    if isinstance(result, str):  # "busy"
+        info["ready_at"] = time.time() + RETRY_DELAY
+        with _pending_lock:
+            _pending[p] = info
+        return
+    info["attempts"] += 1
+    if info["attempts"] < MAX_ATTEMPTS:
+        info["ready_at"] = time.time() + RETRY_DELAY * info["attempts"]
+        with _pending_lock:
+            _pending[p] = info
+        log(f"Retry {info['attempts']}/{MAX_ATTEMPTS} in "
+            f"{int(RETRY_DELAY * info['attempts'])}s: {p.name}")
+    else:
+        _move_failed(p)
+
+
 def _process_pending(now):
     """One sweep of the pending queue. Returns the number of files handled."""
     handled = 0
@@ -192,7 +230,13 @@ def _process_pending(now):
             continue
         _pending.pop(p, None)
         handled += 1
+        _state["status"] = "converting"
+        _state["current"] = p.name
+        _save_state()
         result = process_file(p)
+        _state["status"] = "idle"
+        _state["current"] = ""
+        _save_state()
         if result is True:
             continue
         if isinstance(result, str):  # "busy" — lock held, not a failure
@@ -215,10 +259,25 @@ def _process_pending(now):
 
 def _backlog():
     """Pick up files that were already in the inbox before we started."""
+    # Load saved attempt counts from a previous run.
+    global _restored
+    try:
+        if STATE_FILE and STATE_FILE.is_file():
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            for q in data.get("queue", []) or []:
+                _restored[q["path"]] = q
+    except Exception:
+        _restored = {}
+
     try:
         for p in INBOX.rglob("*"):
             if p.is_file():
                 _touch(p)
+                if str(p) in _restored:
+                    saved = _restored[str(p)]
+                    if p in _pending:
+                        _pending[p]["attempts"] = int(saved.get("attempts", 0))
+                        _pending[p]["ready_at"] = float(saved.get("ready_at", _pending[p]["ready_at"]))
     except Exception as e:
         log(f"Backlog scan error: {e}")
     if _pending:
@@ -239,7 +298,49 @@ class InboxHandler(FileSystemEventHandler):
             _touch(e.src_path)
 
 
+_STOP = False
+
+
+def _request_stop(signum, frame):
+    global _STOP
+    _STOP = True
+
+
+
+class _StatusHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.split("?")[0] not in ("/", "/status"):
+            self.send_response(404)
+            self.end_headers()
+            return
+        try:
+            body = json.dumps(_state, ensure_ascii=False).encode("utf-8")
+        except Exception:
+            body = b"{}"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def _start_status_server(port):
+    try:
+        httpd = socketserver.ThreadingTCPServer(("0.0.0.0", port), _StatusHandler)
+        httpd.daemon_threads = True
+        httpd.serve_forever()
+    except Exception as e:
+        log(f"Status server failed to start on port {port}: {e}")
+
+
+
 def main():
+    global _STOP
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
     for d in (INBOX, RESEARCH, FAILED):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -263,20 +364,74 @@ def main():
     observer.schedule(handler, str(INBOX), recursive=True)
     observer.start()
 
+    global _executor
+    workers = int(os.environ.get("MARK_DAWN_WORKERS", "1"))
+    if workers < 1:
+        workers = 1
+    _executor = ThreadPoolExecutor(max_workers=workers)
+    log(f"Worker pool: {workers} concurrent conversion(s)")
+
+    status_port = int(os.environ.get("MARK_DAWN_STATUS_PORT", "0"))
+    if status_port > 0:
+        threading.Thread(target=_start_status_server, args=(status_port,), daemon=True).start()
+        log(f"Status endpoint: http://0.0.0.0:{status_port}/status")
+
     _backlog()
 
     try:
-        while True:
-            time.sleep(1.0)
-            _process_pending(time.time())
-            _save_state()
+        if workers == 1:
+            while not _STOP:
+                time.sleep(1.0)
+                _process_pending(time.time())
+                _save_state()
+        else:
+            while not _STOP:
+                time.sleep(1.0)
+                now = time.time()
+                ready = []
+                with _pending_lock:
+                    for p, info in list(_pending.items()):
+                        if not p.exists():
+                            del _pending[p]
+                            continue
+                        if now < info["ready_at"]:
+                            continue
+                        if not _stable_size(p):
+                            info["ready_at"] = now + 1.0
+                            continue
+                        del _pending[p]
+                        ready.append((p, info))
+                for p, info in ready:
+                    if len(_inflight) >= workers:
+                        info["ready_at"] = now + 1.0
+                        with _pending_lock:
+                            _pending[p] = info
+                        continue
+                    fut = _executor.submit(_worker, p, info)
+                    _inflight[fut] = p
+                done = [f for f in list(_inflight) if f.done()]
+                for f in done:
+                    _inflight.pop(f, None)
+                    try:
+                        f.result()
+                    except Exception as e:
+                        log(f"worker error: {e}")
+                _save_state()
     except KeyboardInterrupt:
-        print("\n[*] Stopping watcher...", flush=True)
-        observer.stop()
+        _request_stop(signal.SIGINT, None)
 
+    log("Stopping watcher...")
+    if _executor is not None:
+        _executor.shutdown(wait=True, cancel_futures=False)
+    observer.stop()
     observer.join()
     _state["stopped"] = time.strftime("%Y-%m-%d %H:%M:%S")
     _save_state()
+    if PID_FILE:
+        try:
+            PID_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

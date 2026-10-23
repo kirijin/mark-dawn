@@ -15,6 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
+# ocrmypdf: the base image ships a system copy; the venv copy (from
+# requirements.txt) takes precedence on PATH. Both are 17.x; keep the venv pin
+# for Windows/macOS parity and let it shadow here.
 RUN python3 -m venv /opt/markdawn
 ENV PATH="/opt/markdawn/bin:$PATH"
 
@@ -29,6 +32,11 @@ COPY entrypoint.sh /usr/local/bin/
 
 RUN chmod +x /usr/local/bin/*.py /usr/local/bin/*.sh
 
+# Create a non-root runtime user and pre-create writable dirs.
+RUN groupadd -r markdawn && useradd -r -g markdawn -d /home/markdawn -m markdawn \
+    && mkdir -p /data/Inbox /data/Research /data/Inbox_Failed /workspace/tmp \
+    && chown -R markdawn:markdawn /data /workspace
+
 WORKDIR /workspace
 
 # Pipeline defaults — launchers override these with their own -e flags, but a
@@ -42,7 +50,7 @@ LABEL org.opencontainers.image.title="mark-dawn" \
       org.opencontainers.image.source="https://github.com/kirijin/mark-dawn" \
       org.opencontainers.image.licenses="MIT"
 
-USER root
-RUN mkdir -p /workspace/tmp && chmod 700 /workspace/tmp
+USER markdawn
+RUN mkdir -p /workspace/tmp && chmod 700 /workspace/tmp 2>/dev/null || true
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["watcher"]

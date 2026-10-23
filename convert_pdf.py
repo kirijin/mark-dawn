@@ -16,7 +16,7 @@ same env schema everywhere:
 Usage: convert_pdf.py FILE [--docx]
 Exit codes: 0 ok, 1 failure, 2 busy (another conversion holds the lock).
 """
-import os, sys, shutil, subprocess, tempfile, time
+import os, sys, shutil, subprocess, tempfile, time, hashlib, importlib, importlib.util
 from pathlib import Path
 
 import fitz
@@ -37,6 +37,88 @@ LOCK_STALE_AFTER = 30 * 60  # seconds; steal locks older than this
 
 IMAGE_EXTS = {".tiff", ".tif", ".jpeg", ".jpg", ".png", ".bmp", ".webp"}
 DOC_EXTS   = {".docx", ".xlsx", ".pptx", ".html", ".csv", ".rtf"}
+
+# ---------------------------------------------------------------------------
+# Plugin system for handlers
+# ---------------------------------------------------------------------------
+# A handler is any object with `.extensions` (set of suffixes) and
+# `.convert(file_path, out_md)`. Built-ins register first; plugins (entry
+# points, local dir, MARK_DAWN_PLUGINS) can override them.
+HANDLERS = {}
+
+
+class _BuiltinHandler:
+    def __init__(self, name, extensions, func_name):
+        self.name = name
+        self.extensions = {e.lower() for e in extensions}
+        self.func_name = func_name
+
+    def convert(self, file_path, out_md):
+        globals()[self.func_name](file_path, out_md)
+
+
+def _register_handler(handler):
+    for ext in getattr(handler, "extensions", ()) or ():
+        HANDLERS[str(ext).lower()] = handler
+
+
+def _load_plugins():
+    """Discover and register handlers from entry points, local dir, and env."""
+    # 1. Python entry points (pip-installed packages).
+    try:
+        from importlib.metadata import entry_points
+        eps = entry_points()
+        group = eps.get("mark_dawn.handlers", []) if hasattr(eps, "get") else []
+        try:
+            group = eps.select(group="mark_dawn.handlers")
+        except Exception:
+            pass
+        for ep in group:
+            try:
+                _register_handler(ep.load())
+            except Exception as e:
+                print(f"plugin load failed ({ep.name}): {e}", file=sys.stderr)
+    except Exception:
+        pass
+    # 2. Local plugin directory.
+    local_dir = Path(os.environ.get(
+        "MARK_DAWN_PLUGIN_DIR",
+        str(Path.home() / ".config" / "mark-dawn" / "plugins"))).expanduser()
+    if local_dir.is_dir():
+        for py in sorted(local_dir.glob("*.py")):
+            try:
+                spec = importlib.util.spec_from_file_location(py.stem, py)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                h = getattr(mod, "HANDLER", None)
+                if h is None and hasattr(mod, "register"):
+                    h = mod.register()
+                if h is not None:
+                    _register_handler(h)
+            except Exception as e:
+                print(f"plugin load failed ({py}): {e}", file=sys.stderr)
+    # 3. Env-specified modules.
+    for modname in os.environ.get("MARK_DAWN_PLUGINS", "").split(","):
+        modname = modname.strip()
+        if not modname:
+            continue
+        try:
+            mod = importlib.import_module(modname)
+            h = getattr(mod, "HANDLER", None)
+            if h is None and hasattr(mod, "register"):
+                h = mod.register()
+            if h is not None:
+                _register_handler(h)
+        except Exception as e:
+            print(f"plugin load failed ({modname}): {e}", file=sys.stderr)
+
+
+# Register built-ins.
+for _h in (_BuiltinHandler("pdf", {".pdf"}, "_handle_pdf"),
+           _BuiltinHandler("djvu", {".djvu"}, "_handle_djvu"),
+           _BuiltinHandler("image", IMAGE_EXTS, "_handle_image"),
+           _BuiltinHandler("doc", DOC_EXTS, "_handle_doc")):
+    _register_handler(_h)
 
 # Windows portable layout: <install>/scripts/convert_pdf.py → <install>/.msys2
 _INSTALL_DIR = Path(__file__).resolve().parent.parent
@@ -81,12 +163,32 @@ def _unique_path(directory: Path, name: str) -> Path:
     raise RuntimeError(f"Could not allocate a unique name for {name} in {directory}")
 
 
-def _acquire_lock(stem: str):
-    """Atomic O_EXCL lock in OUT_DIR; steals locks older than LOCK_STALE_AFTER.
+def _pid_alive(pid):
+    """Best-effort liveness check; falls back to alive on uncertain platforms."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        # PermissionError => process exists but isn't ours; treat as alive.
+        # On Windows os.kill semantics differ, so err on the side of "alive".
+        return True
 
-    Returns the lock path, or None if another conversion holds it.
+
+def _lock_path(file_path):
+    """Lock keyed on the resolved input identity, not just the basename."""
+    identity = str(Path(file_path).resolve())
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return OUT_DIR / (".%s.lock" % digest)
+
+
+def _acquire_lock(file_path):
+    """Atomic O_EXCL lock; steal only when the owning PID is dead.
+
+    Returns the lock path, or None if another (live) conversion holds it.
     """
-    lock = OUT_DIR / f".{stem}.lock"
+    lock = _lock_path(file_path)
     for _ in range(2):
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -95,13 +197,23 @@ def _acquire_lock(stem: str):
             return lock
         except FileExistsError:
             try:
-                age = time.time() - lock.stat().st_mtime
+                owner_raw = lock.read_text().strip()
+                owner = int(owner_raw) if owner_raw.isdigit() else None
             except FileNotFoundError:
-                continue  # raced with a concurrent release; retry
-            if age > LOCK_STALE_AFTER:
-                lock.unlink(missing_ok=True)
                 continue
-            return None
+            except OSError:
+                owner = None
+            if owner is not None and _pid_alive(owner):
+                try:
+                    age = time.time() - lock.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                if age <= LOCK_STALE_AFTER:
+                    return None
+            lock.unlink(missing_ok=True)
+            continue
+        except FileNotFoundError:
+            continue
     return None
 
 
@@ -112,13 +224,59 @@ def _release_lock(lock):
         pass
 
 
+
+def _clean_markdown(text: str) -> str:
+    """Deterministic cleanup of generated markdown (OCR-friendly)."""
+    import re, unicodedata
+    text = unicodedata.normalize("NFKC", text)
+    # De-hyphenate line-broken words (common OCR artifact).
+    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
+    lines = [ln.rstrip() for ln in text.split("\n")]
+    out = []
+    blanks = 0
+    for ln in lines:
+        if ln == "":
+            blanks += 1
+            if blanks <= 2:
+                out.append(ln)
+        else:
+            blanks = 0
+            out.append(ln)
+    text = "\n".join(out).rstrip("\n") + "\n"
+    return text
+
+
+def _llm_cleanup(text: str) -> str:
+    """Optional LLM cleanup pass; no-op unless configured."""
+    url = os.environ.get("MARK_DAWN_LLM_URL", "").strip()
+    if not url:
+        return text
+    try:
+        import urllib.request, json as _json
+        data = _json.dumps({"text": text}).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            payload = _json.loads(resp.read().decode("utf-8"))
+        return payload.get("text", text)
+    except Exception as e:
+        print(f"LLM cleanup failed, keeping cleaned markdown: {e}", file=sys.stderr)
+        return text
+
+
 def _atomic_write(path: Path, text: str):
-    """Write via tmp+rename so a crash never leaves a half-written output."""
+    """Clean, optionally keep raw, then atomically replace the output."""
+    raw = text
+    text = _clean_markdown(text)
+    if os.environ.get("MARK_DAWN_LLM_CLEANUP") == "1":
+        text = _llm_cleanup(text)
+    if os.environ.get("MARK_DAWN_KEEP_RAW") == "1":
+        try:
+            path.with_name(path.name + ".raw").write_text(raw, encoding="utf-8")
+        except OSError:
+            pass
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
-    if path.exists():
-        path.unlink()
-    tmp.rename(path)
+    os.replace(tmp, path)  # atomic on the same filesystem; no unlink window
 
 
 def _pdf_text_ratio(path):
@@ -135,7 +293,7 @@ def _ocr_pdf(pdf_path, out_md):
     with tempfile.TemporaryDirectory() as td:
         ocr_out = Path(td) / "ocr.pdf"
         subprocess.run([
-            _find_ocrmypdf(), "--skip-text", "-l", OCRLANGS,
+            _find_ocrmypdf(), "--skip-text", "--deskew", "--clean", "-l", OCRLANGS,
             "-j", "1", "--output-type", "pdf",
             str(pdf_path), str(ocr_out),
         ], capture_output=True, text=True, timeout=600, check=True,
@@ -163,12 +321,24 @@ def _md_to_docx(md_path):
 
 def _handle_pdf(file_path, out_md):
     avg, n = _pdf_text_ratio(file_path)
+    if n == 0:
+        print("PDF has no pages; nothing to convert.", file=sys.stderr)
+        sys.exit(1)
     if avg > 100:
-        md = pymupdf4llm.to_markdown(str(file_path))
+        pages = None
+        if n > MAX_PAGES:
+            pages = list(range(MAX_PAGES))
+            print(f"WARNING: digital PDF has {n} pages; processing first "
+                  f"{MAX_PAGES}. Set MARK_DAWN_MAX_PAGES to raise the cap.",
+                  file=sys.stderr)
+        md = pymupdf4llm.to_markdown(str(file_path), pages=pages)
         _atomic_write(out_md, md)
         print(f"Digital PDF ({int(avg)} chars/page). Converting via pymupdf4llm...")
         return
 
+    if n > MAX_PAGES:
+        print(f"WARNING: scanned PDF has {n} pages; processing first {MAX_PAGES}. "
+              f"Set MARK_DAWN_MAX_PAGES to raise the cap.", file=sys.stderr)
     print(f"Scanned PDF ({int(avg)} chars/page). Rendering pages for OCR...")
     doc = fitz.open(str(file_path))
     ppi = 200
@@ -238,6 +408,9 @@ def _handle_djvu(file_path, out_md):
                         s = min(MAX_DIM / w, MAX_DIM / h)
                         img = img.resize((int(w * s), int(h * s)), PImage.LANCZOS)
                     img.info["dpi"] = (200, 200)
+                    # Materialise pixels before the source PPM is unlinked (PIL is
+                    # lazy; otherwise save() may read from a deleted file).
+                    img.load()
                     images.append(img)
                     ppm.unlink()
             if images:
@@ -275,38 +448,91 @@ def _handle_doc(file_path, out_md):
         sys.exit(1)
 
 
+
+
+def _check_input(file_path, ext):
+    """Input hygiene: size cap + magic bytes. Returns (ok, message)."""
+    max_mb = int(os.environ.get("MARK_DAWN_MAX_INPUT_MB", "200"))
+    try:
+        size = file_path.stat().st_size
+    except OSError as e:
+        return False, "cannot stat input: %s" % e
+    if size > max_mb * 1024 * 1024:
+        return False, "input too large: %d bytes > %d MB (MARK_DAWN_MAX_INPUT_MB)" % (size, max_mb)
+    try:
+        head = file_path.read_bytes()[:8]
+    except OSError as e:
+        return False, "cannot read input: %s" % e
+    if ext == ".pdf" and not head.startswith(b"%PDF"):
+        return False, "not a PDF (bad magic bytes)"
+    if ext == ".djvu" and not head.startswith(b"AT&TFORM"):
+        return False, "not a DjVu (bad magic bytes)"
+    return True, ""
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: convert_pdf.py FILE [--docx]", file=sys.stderr)
         sys.exit(1)
 
-    file_path = Path(sys.argv[1])
-    want_docx = "--docx" in sys.argv
+    args = sys.argv[1:]
+    want_docx = "--docx" in args
+    langs_override = None
+    positional = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--docx":
+            i += 1
+            continue
+        if a == "--langs":
+            if i + 1 >= len(args):
+                print("Usage: convert_pdf.py FILE [--docx] [--langs LANGS]", file=sys.stderr)
+                sys.exit(1)
+            langs_override = args[i + 1]
+            i += 2
+            continue
+        if a.startswith("--langs="):
+            langs_override = a.split("=", 1)[1]
+            i += 1
+            continue
+        positional.append(a)
+        i += 1
+
+    if not positional:
+        print("Usage: convert_pdf.py FILE [--docx] [--langs LANGS]", file=sys.stderr)
+        sys.exit(1)
+    file_path = Path(positional[0])
+
+    if langs_override:
+        global OCRLANGS
+        OCRLANGS = langs_override
 
     if not file_path.exists():
         print(f"File not found: {file_path}", file=sys.stderr)
         sys.exit(1)
 
+    ok, msg = _check_input(file_path, file_path.suffix.lower())
+    if not ok:
+        print(msg, file=sys.stderr)
+        sys.exit(1)
+
     out_md = _unique_path(OUT_DIR, f"{file_path.stem}.md")
     ext = file_path.suffix.lower()
 
-    lock = _acquire_lock(file_path.stem)
+    lock = _acquire_lock(file_path)
     if lock is None:
         print(f"BUSY: another conversion for '{file_path.stem}' is running", file=sys.stderr)
         sys.exit(2)
 
+    _load_plugins()
+
+    handler = HANDLERS.get(ext)
+    if handler is None:
+        print(f"Unsupported format: {ext}", file=sys.stderr)
+        sys.exit(1)
     try:
-        if ext == ".pdf":
-            _handle_pdf(file_path, out_md)
-        elif ext == ".djvu":
-            _handle_djvu(file_path, out_md)
-        elif ext in IMAGE_EXTS:
-            _handle_image(file_path, out_md)
-        elif ext in DOC_EXTS:
-            _handle_doc(file_path, out_md)
-        else:
-            print(f"Unsupported format: {ext}", file=sys.stderr)
-            sys.exit(1)
+        handler.convert(file_path, out_md)
 
         if want_docx:
             _md_to_docx(out_md)

@@ -152,12 +152,12 @@ cmd_restart() {
 }
 
 cmd_convert() {
-    [[ $# -eq 0 ]] && { echo "Usage: $0 convert FILE [--docx]"; exit 1; }
+    [[ $# -eq 0 ]] && { echo "Usage: $0 convert FILE [--docx] [--langs LANGS]"; exit 1; }
     local file_path; file_path="$(realpath "$1")"
     [[ ! -f "$file_path" ]] && { err "Error: file not found: $1"; exit 1; }
     shift
-    local want_docx=""
-    for a in "$@"; do [[ "$a" == "--docx" ]] && want_docx="--docx"; done
+    local extra=()
+    for a in "$@"; do extra+=("$a"); done
 
     log "Converting: $(basename "$file_path")"
     ensure_dirs 2>/dev/null || true
@@ -168,7 +168,7 @@ cmd_convert() {
         $(container_env) \
         -v "$(dirname "$file_path"):/input:Z" \
         -e "MARK_DAWN_LANGS=$LANGS" \
-        "$IMAGE" convert "/input/$(basename "$file_path")" $want_docx
+        "$IMAGE" convert "/input/$(basename "$file_path")" "${extra[@]}"
 }
 
 cmd_logs() {
