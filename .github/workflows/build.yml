@@ -242,6 +242,7 @@ jobs:
           set -euo pipefail
           SMOKE=$(mktemp -d)
           mkdir -p "$SMOKE/Inbox" "$SMOKE/Research" "$SMOKE/Inbox_Failed"
+          chmod -R 777 "$SMOKE"
           echo "Generating fixture PDF inside the image..."
           # insert_textbox wraps the text so the page holds >100 chars →
           # the digital path (pymupdf4llm) runs and the .md is non-empty.
