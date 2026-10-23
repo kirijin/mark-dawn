@@ -20,6 +20,9 @@ try:
     HAS_PYDOCX = True
 except ImportError:
     HAS_PYDOCX = False
+    Pt = lambda x: x
+    Cm = lambda x: x
+    RGBColor = lambda *a, **k: None
 
 # ── Defaults (user-overridable via env) ──
 FONT     = "Calibri"
