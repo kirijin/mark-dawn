@@ -284,6 +284,8 @@ mark-dawn/
 │   ├── mark-dawn-macos            # macOS brew+venv launcher
 │   └── mark-dawn-container        # macOS Apple Container launcher
 │
+├── requirements.txt               # Pinned Python deps (shared by all platforms)
+│
 ├── logo.png                       # Project logo
 ├── LICENCE                        # License
 └── README.md                      # This file
