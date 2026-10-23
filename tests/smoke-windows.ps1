@@ -9,7 +9,18 @@ New-Item -ItemType Directory -Force -Path "$base\Inbox","$base\Research","$base\
 # --- 1. Ensure Python 3.12+ is available ---
 $py = Get-Command python -ErrorAction SilentlyContinue
 if (-not $py) {
-    Write-Host "Python not found. Install from https://www.python.org/downloads/ and re-run."
+    # Try winget (Windows 10 1709+ / Windows 11)
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($winget) {
+        Write-Host "Installing Python 3.12 via winget..."
+        & winget install --id Python.Python.3.12 -e --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        $py = Get-Command python -ErrorAction SilentlyContinue
+    }
+}
+if (-not $py) {
+    Write-Host "Python not found and could not be auto-installed."
+    Write-Host "Install Python 3.12 from https://www.python.org/downloads/ (check 'Add python.exe to PATH'), then re-run."
     "FAIL: python missing" | Out-File "$base\result.txt"
     exit 1
 }
