@@ -24,7 +24,22 @@ if (-not $py) {
     "FAIL: python missing" | Out-File "$base\result.txt"
     exit 1
 }
-$ver = & python --version 2>&1
+$ver = & python -c "import sys; print(sys.version)" 2>&1
+if ($ver -match "was not found|Microsoft Store") {
+    Write-Host "Python is the Microsoft Store stub. Installing via winget..."
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($winget) {
+        & winget install --id Python.Python.3.12 -e --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    }
+    $py = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $py) {
+        Write-Host "Python not installed. Install from https://www.python.org/downloads/ (check 'Add python.exe to PATH'), then re-run."
+        "FAIL: python missing" | Out-File "$base\result.txt"
+        exit 1
+    }
+    $ver = & python -c "import sys; print(sys.version)" 2>&1
+}
 Write-Host "Python: $ver"
 
 # --- 2. Install / refresh mark-dawn ---
