@@ -508,7 +508,7 @@ def _handle_djvu(file_path, out_md):
 
 
 def _handle_image(file_path, out_md):
-    print(f"Image input ({file_path.suffix}). Converting via RapidOCR...")
+    print(f"Image input ({file_path.suffix}). Converting via OCR...")
     try:
         img = PImage.open(str(file_path)).convert("RGB")
     except Exception as e:

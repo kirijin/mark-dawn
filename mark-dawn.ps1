@@ -10,7 +10,7 @@
     administrator rights required (except for Task Scheduler auto-start).
 
     Architecture: Python.org embedded distribution + pip for Python packages,
-    MSYS2 only for system tool binaries (tesseract, ghostscript, qpdf).
+    MSYS2 only for system tool binaries (djvulibre).
 
     Data directories match the Linux convention so the workflow is identical:
       %USERPROFILE%\Documents\Inbox         Drop files here

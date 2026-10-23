@@ -349,7 +349,7 @@ Commands:
   help                Show this help
 
 Supported formats:
-  PDF, DjVu, TIFF, JPEG, PNG, BMP, WebP → markdown (OCR via ocrmypdf)
+  PDF, DjVu, TIFF, JPEG, PNG, BMP, WebP → markdown (OCR via RapidOCR)
   DOCX, XLSX, PPTX, HTML, CSV, RTF       → markdown (via markitdown)
   --docx flag converts markdown → DOCX  (needs pandoc in image)
   --docx is also auto-detected for files in Inbox/2docx/
