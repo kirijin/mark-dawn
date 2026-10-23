@@ -1,25 +1,11 @@
 # SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
 # SPDX-License-Identifier: MIT
 
-FROM docker.io/jbarlow83/ocrmypdf:v17
+FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pandoc \
-    tesseract-ocr-eng \
-    tesseract-ocr-rus \
-    tesseract-ocr-fra \
-    tesseract-ocr-deu \
-    tesseract-ocr-chi-sim \
-    tesseract-ocr-jpn \
-    python3-pip \
-    python3-venv \
     && rm -rf /var/lib/apt/lists/*
-
-# ocrmypdf: the base image ships a system copy; the venv copy (from
-# requirements.txt) takes precedence on PATH. Both are 17.x; keep the venv pin
-# for Windows/macOS parity and let it shadow here.
-RUN python3 -m venv /opt/markdawn
-ENV PATH="/opt/markdawn/bin:$PATH"
 
 COPY requirements.txt /tmp/
 RUN pip install --no-cache-dir --upgrade pip && \

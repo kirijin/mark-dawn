@@ -9,18 +9,25 @@ from pathlib import Path
 
 import pytest
 
-# convert_pdf.py imports fitz/pymupdf4llm/PIL at module load; mock them so the
-# plugin tests can import the module in minimal CI environments (no PyMuPDF).
+# convert_pdf.py imports fitz/pymupdf4llm/PIL at module load; mock them only in
+# minimal CI environments (no PyMuPDF) so the plugin tests can import the
+# module. In a full environment, leave the real modules in place.
 from unittest import mock as _mock
 for _name in ("fitz", "pymupdf4llm", "PIL"):
-    sys.modules.setdefault(_name, _mock.MagicMock())
+    try:
+        __import__(_name)
+    except Exception:
+        sys.modules.setdefault(_name, _mock.MagicMock())
 _real_docx = sys.modules.get("docx_styler")
-sys.modules["docx_styler"] = _mock.MagicMock()
-try:
-    pass
-finally:
-    if _real_docx is not None:
-        sys.modules["docx_styler"] = _real_docx
+if _real_docx is None:
+    try:
+        __import__("docx_styler")
+        _real_docx = sys.modules.get("docx_styler")
+    except Exception:
+        sys.modules["docx_styler"] = _mock.MagicMock()
+        _real_docx = None
+if _real_docx is None and "docx_styler" not in sys.modules:
+    sys.modules["docx_styler"] = _mock.MagicMock()
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))

@@ -19,6 +19,14 @@ Exit codes: 0 ok, 1 failure, 2 busy (another conversion holds the lock).
 import os, sys, shutil, subprocess, tempfile, time, hashlib, importlib, importlib.util
 from pathlib import Path
 
+try:
+    from rapidocr import RapidOCR
+    from rapidocr.utils.typings import OCRVersion
+    HAS_RAPIDOCR = True
+except ImportError:
+    RapidOCR = None
+    OCRVersion = None
+    HAS_RAPIDOCR = False
 import fitz
 import pymupdf4llm
 from PIL import Image as PImage
@@ -288,7 +296,7 @@ def _pdf_text_ratio(path):
     return t / n if n else 0, n
 
 
-def _ocr_pdf(pdf_path, out_md):
+def _ocr_pdf_tesseract(pdf_path, out_md):
     """OCR a PDF via ocrmypdf, write markdown."""
     with tempfile.TemporaryDirectory() as td:
         ocr_out = Path(td) / "ocr.pdf"
@@ -301,6 +309,77 @@ def _ocr_pdf(pdf_path, out_md):
         md = pymupdf4llm.to_markdown(str(ocr_out))
         _atomic_write(out_md, md)
         print("OCR complete. Converting to Markdown...")
+
+
+# ---------------------------------------------------------------------------
+# RapidOCR engine (lightweight, cross-platform, no Tesseract)
+# ---------------------------------------------------------------------------
+
+_LANG_MAP = {
+    "eng": "en", "rus": "cyrillic", "fra": "french", "deu": "german",
+    "chi_sim": "ch", "jpn": "japan", "spa": "es", "ita": "it",
+    "por": "pt", "ara": "arabic", "kor": "korean",
+}
+
+_V5_LANGS = {"cyrillic", "arabic", "devanagari", "el", "eslav", "korean",
+             "ta", "te", "th", "latin"}
+
+
+def _primary_rapidocr_lang():
+    """Pick the primary RapidOCR (lang_type, OCRVersion) from MARK_DAWN_LANGS."""
+    if OCRVersion is None:
+        return "en", None
+    codes = [c.strip() for c in OCRLANGS.replace("+", ",").split(",") if c.strip()]
+    mapped = [_LANG_MAP.get(c, c) for c in codes]
+    # Prefer first non-english, else first.
+    primary = mapped[0] if mapped else "en"
+    for m in mapped:
+        if m not in ("en", "ch"):
+            primary = m
+            break
+    if primary in _V5_LANGS:
+        return primary, OCRVersion.PPOCRV5
+    return primary, OCRVersion.PPOCRV6
+
+
+def _make_rapidocr_engine():
+    if not HAS_RAPIDOCR:
+        raise RuntimeError("rapidocr is not installed")
+    lang, version = _primary_rapidocr_lang()
+    try:
+        if version is None:
+            return RapidOCR()
+        return RapidOCR(params={"Rec.lang_type": lang, "Rec.ocr_version": version})
+    except Exception:
+        return RapidOCR()
+
+
+def _rapidocr_text(images):
+    """Run RapidOCR over a list of PIL images; return joined markdown text."""
+    engine = _make_rapidocr_engine()
+    parts = []
+    for i, img in enumerate(images):
+        try:
+            out = engine(img)
+            txts = getattr(out, "txts", None) or []
+            if txts:
+                text = "\n".join(t for t in txts if t and t.strip())
+            else:
+                md = getattr(out, "to_markdown", None)
+                text = md() if callable(md) else ""
+                if text and ("没有检测到" in text or "未检测" in text):
+                    text = ""
+            if text and text.strip():
+                parts.append("## Page %d\n\n%s" % (i + 1, text.strip()))
+        except Exception as e:
+            print("RapidOCR failed on page %d: %s" % (i + 1, e), file=sys.stderr)
+    return "\n\n".join(parts)
+
+
+def _ocr_with_rapidocr(images, out_md):
+    text = _rapidocr_text(images)
+    _atomic_write(out_md, text if text.strip() else "")
+    print("OCR complete (RapidOCR). Converting to Markdown...")
 
 
 def _md_to_docx(md_path):
@@ -343,28 +422,29 @@ def _handle_pdf(file_path, out_md):
     doc = fitz.open(str(file_path))
     ppi = 200
     zoom = ppi / 72
-    out_doc = fitz.open()
+    images = []
     for i in range(min(n, MAX_PAGES)):
         pix = doc[i].get_pixmap(matrix=fitz.Matrix(zoom, zoom))
         w, h = pix.width, pix.height
         if w > MAX_DIM or h > MAX_DIM:
             s = min(MAX_DIM / w, MAX_DIM / h)
             pix = doc[i].get_pixmap(matrix=fitz.Matrix(zoom * s, zoom * s))
-        sr = doc[i].rect  # source page rect in points
-        page = out_doc.new_page(width=sr.width, height=sr.height)
-        page.insert_image(page.rect, pixmap=pix)
+        # Materialise pixels into a PIL image before the pixmap is freed.
+        img = PImage.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        images.append(img)
     doc.close()
-    rendered = len(out_doc)
-    if rendered == 0:
-        _ocr_pdf(file_path, out_md)
+
+    if not images:
+        print("No pages rendered; nothing to convert.", file=sys.stderr)
+        sys.exit(1)
+
+    engine = os.environ.get("MARK_DAWN_OCR_ENGINE", "rapidocr").strip().lower()
+    if engine == "tesseract" or not HAS_RAPIDOCR:
+        # Legacy path: ocrmypdf + Tesseract on the original file.
+        _ocr_pdf_tesseract(file_path, out_md)
         return
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-        tmp_pdf = Path(f.name)
-    out_doc.save(str(tmp_pdf), garbage=4, deflate=True)
-    out_doc.close()
-    print(f"  Rendered {rendered} page(s) via fitz rasterization")
-    _ocr_pdf(tmp_pdf, out_md)
-    tmp_pdf.unlink(missing_ok=True)
+
+    _ocr_with_rapidocr(images, out_md)
 
 
 def _djvu_page_count(file_path):
@@ -414,25 +494,39 @@ def _handle_djvu(file_path, out_md):
                     images.append(img)
                     ppm.unlink()
             if images:
-                images[0].save(str(pdf_path), save_all=True,
-                               append_images=images[1:], format="PDF")
                 print(f"  Rendered {len(images)} page(s) via ddjvu")
-                _ocr_pdf(pdf_path, out_md)
+                engine = os.environ.get("MARK_DAWN_OCR_ENGINE", "rapidocr").strip().lower()
+                if engine == "tesseract" or not HAS_RAPIDOCR:
+                    images[0].save(str(pdf_path), save_all=True,
+                                   append_images=images[1:], format="PDF")
+                    _ocr_pdf_tesseract(pdf_path, out_md)
+                else:
+                    _ocr_with_rapidocr(images, out_md)
                 return
     print("  DjVu support requires djvulibre-bin (djvutxt + ddjvu + djvused)", file=sys.stderr)
     sys.exit(1)
 
 
 def _handle_image(file_path, out_md):
-    print(f"Image input ({file_path.suffix}). Converting via PIL+ocrmypdf...")
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-        tmp_pdf = Path(f.name)
+    print(f"Image input ({file_path.suffix}). Converting via RapidOCR...")
     try:
         img = PImage.open(str(file_path)).convert("RGB")
-        img.save(str(tmp_pdf), "PDF", resolution=300)
-        _ocr_pdf(tmp_pdf, out_md)
-    finally:
-        tmp_pdf.unlink(missing_ok=True)
+    except Exception as e:
+        print(f"Cannot open image: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    engine = os.environ.get("MARK_DAWN_OCR_ENGINE", "rapidocr").strip().lower()
+    if engine == "tesseract" or not HAS_RAPIDOCR:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            tmp_pdf = Path(f.name)
+        try:
+            img.save(str(tmp_pdf), "PDF", resolution=300)
+            _ocr_pdf_tesseract(tmp_pdf, out_md)
+        finally:
+            tmp_pdf.unlink(missing_ok=True)
+        return
+
+    _ocr_with_rapidocr([img], out_md)
 
 
 def _handle_doc(file_path, out_md):

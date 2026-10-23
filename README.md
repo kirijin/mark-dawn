@@ -110,9 +110,9 @@ mark-dawn help                  # Full command reference
 
 | Extension | Handler | Notes |
 |-----------|---------|-------|
-| `.pdf` | Smart split | **Digital** (avg >100 chars/page) → pymupdf4llm direct. **Scanned** → render pages via fitz → OCR via ocrmypdf+Tesseract |
+| `.pdf` | Smart split | **Digital** (avg >100 chars/page) → pymupdf4llm direct. **Scanned** → render pages via fitz → OCR via RapidOCR (ONNX) |
 | `.djvu` | djvutxt / ddjvu | Native text extraction if available. Falls back to page render → OCR |
-| `.tiff .jpeg .png .bmp .webp` | PIL → PDF → OCR | Rasterized to PDF at 300 DPI, then OCR'd |
+| `.tiff .jpeg .png .bmp .webp` | RapidOCR (ONNX) | Direct OCR on the image, no PDF intermediate |
 | `.docx .xlsx .pptx .html .csv .rtf` | markitdown | Microsoft's document parser. Fast, no OCR |
 | *(plugin)* | `HANDLERS` | Drop a `.py` into `~/.config/mark-dawn/plugins/` or set `MARK_DAWN_PLUGINS` — see Plugins below |
 
@@ -141,7 +141,7 @@ graph LR
     B -->|DjVu| F{djvutxt works?}
     F -->|yes| G[native text]
     F -->|no| D
-    D --> H[ocrmypdf + Tesseract]
+    D --> H[RapidOCR (ONNX)]
     H --> C
     C --> I[.md file]
     I --> J{--docx?}
@@ -373,7 +373,7 @@ The installer handles `os.add_dll_directory()` for MSYS2 binaries. If you see DL
 
 - [pymupdf4llm](https://pypi.org/project/pymupdf4llm/) — PDF→Markdown via MuPDF
 - [markitdown](https://pypi.org/project/markitdown/) — Office docs→Markdown (Microsoft)
-- [ocrmypdf](https://github.com/ocrmypdf/ocrmypdf) — OCR pipeline for scanned PDFs
-- [Tesseract](https://github.com/tesseract-ocr/tesseract) — OCR engine
+- [RapidOCR](https://github.com/RapidAI/RapidOCR) — lightweight ONNX OCR (PP-OCR), replaces Tesseract
+- [onnxruntime](https://onnxruntime.ai/) — inference engine for RapidOCR
 - [djvulibre](https://djvu.sourceforge.net/) — DjVu processing
 - [watchdog](https://pypi.org/project/watchdog/) — filesystem watcher

@@ -12,16 +12,18 @@ import pytest
 os.environ.setdefault("MARK_DAWN_OUT_DIR", "/tmp/md-test-out")
 os.environ.setdefault("MARK_DAWN_FAILED_DIR", "/tmp/md-test-failed")
 
-# Pre-populate module-level imports so convert_pdf.py loads without deps
+# Save real modules before overwriting, so we can restore them for other test files.
+_real_fitz = sys.modules.get("fitz")
+_real_pymu = sys.modules.get("pymupdf4llm")
+_real_pil = sys.modules.get("PIL")
+_real_docx_styler = sys.modules.get("docx_styler")
+
 _fake_fitz   = mock.MagicMock()
 _fake_pymu   = mock.MagicMock()
 _fake_pil    = mock.MagicMock()
 sys.modules["fitz"]         = _fake_fitz
 sys.modules["pymupdf4llm"]  = _fake_pymu
 sys.modules["PIL"]          = _fake_pil
-# Fake docx_styler for THIS file's import of convert_pdf, then restore the
-# real module so other test files (test_docx_styler.py) get it.
-_real_docx_styler = sys.modules.get("docx_styler")
 sys.modules["docx_styler"]  = mock.MagicMock()
 try:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -32,15 +34,12 @@ finally:
     else:
         sys.modules.pop("docx_styler", None)
 
-# Re-bind module references so our mocks behave as the module objects
 convert_pdf.fitz        = _fake_fitz
 convert_pdf.pymupdf4llm = _fake_pymu
 
-# Restore real modules in sys.modules so other test files (test_golden,
-# test_integration) can import the genuine dependencies. convert_pdf's bound
-# attributes above keep using the mocks for this file's tests.
-for _name, _real in (("fitz", None), ("pymupdf4llm", None),
-                     ("PIL", None), ("docx_styler", _real_docx_styler)):
+# Restore real modules so other test files get them.
+for _name, _real in (("fitz", _real_fitz), ("pymupdf4llm", _real_pymu),
+                     ("PIL", _real_pil), ("docx_styler", _real_docx_styler)):
     if _real is not None:
         sys.modules[_name] = _real
     else:
@@ -143,7 +142,7 @@ class TestOcrPdf:
                               return_value="# Hello") as to_md,
         ):
             sp.run.return_value = mock.MagicMock(returncode=0)
-            convert_pdf._ocr_pdf(pdf, out)
+            convert_pdf._ocr_pdf_tesseract(pdf, out)
 
             # ocrmypdf called with --skip-text (path may be resolved via which)
             ocr_args = sp.run.call_args.args[0]
@@ -211,18 +210,11 @@ class TestHandlePdf:
         fitz_mocks["open_"].side_effect = lambda path=None: out_doc if path is None else fitz_mocks["src_doc"]
 
         out = Path("/tmp/md-test-out/scanned_out.md")
-        ocr_md_path = Path("/tmp/md-test-out/scanned_out.md")
 
-        with (
-            mock.patch.object(convert_pdf, "_ocr_pdf") as ocr,
-            mock.patch.object(convert_pdf, "tempfile") as tf,
-        ):
-            tf.NamedTemporaryFile.return_value.__enter__.return_value.name = "/tmp/_rendered.pdf"
+        with mock.patch.object(convert_pdf, "_ocr_with_rapidocr") as ocr:
             convert_pdf._handle_pdf(Path("/tmp/dummy.pdf"), out)
 
-        # _ocr_pdf called with temp rendered PDF
         assert ocr.called
-        assert str(ocr.call_args.args[0]).endswith("_rendered.pdf") or ocr.call_args.args[0] == Path("/tmp/_rendered.pdf")
 
     def test_empty_pdf_exits(self, fitz_mocks):
         """An empty (zero-page) PDF is rejected with exit code 1 instead of
@@ -261,7 +253,7 @@ class TestHandleDjVu:
                               side_effect=lambda x: f"/usr/bin/{x}"),
             mock.patch.object(convert_pdf, "subprocess") as sp,
             mock.patch.object(convert_pdf, "PImage") as pil,
-            mock.patch.object(convert_pdf, "_ocr_pdf") as ocr,
+            mock.patch.object(convert_pdf, "_ocr_with_rapidocr") as ocr,
             mock.patch.object(convert_pdf.Path, "exists", return_value=True),
             mock.patch.object(convert_pdf.Path, "unlink", return_value=None),
         ):
@@ -302,15 +294,12 @@ class TestHandleImage:
         out = Path("/tmp/md-test-out/img_out.md")
         with (
             mock.patch.object(convert_pdf, "PImage") as pil,
-            mock.patch.object(convert_pdf, "_ocr_pdf") as ocr,
-            mock.patch.object(convert_pdf, "tempfile") as tf,
+            mock.patch.object(convert_pdf, "_ocr_with_rapidocr") as ocr,
         ):
-            tf.NamedTemporaryFile.return_value.__enter__.return_value.name = "/tmp/_img.pdf"
             pil.open.return_value.convert.return_value = pil.open.return_value
             convert_pdf._handle_image(Path("/tmp/photo.jpg"), out)
 
         assert ocr.called
-        assert str(ocr.call_args.args[0]) == "/tmp/_img.pdf"
 
 
 # ---------------------------------------------------------------------------
