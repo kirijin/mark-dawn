@@ -19,7 +19,7 @@ if ($PSCommandPath) {
         $base = "https://raw.githubusercontent.com/kirijin/mark-dawn/main"
         Invoke-WebRequest -Uri "$base/mark-dawn.ps1" -UseBasicParsing -OutFile (Join-Path $tmp "mark-dawn.ps1") -ErrorAction Stop
         foreach ($m in $modules) {
-            Invoke-WebRequest -Uri "$base/windows/$m" -UseBasicParsing -OutFile (Join-Path $tmp "windows" $m) -ErrorAction Stop
+            Invoke-WebRequest -Uri "$base/windows/$m" -UseBasicParsing -OutFile (Join-Path (Join-Path $tmp "windows") $m) -ErrorAction Stop
         }
         & (Join-Path $tmp "mark-dawn.ps1") @args
     } finally {
