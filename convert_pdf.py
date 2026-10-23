@@ -366,8 +366,11 @@ def _rapidocr_text(images):
                 text = "\n".join(t for t in txts if t and t.strip())
             else:
                 md = getattr(out, "to_markdown", None)
-                text = md() if callable(md) else ""
-                if text and ("没有检测到" in text or "未检测" in text):
+                text = str(md()) if callable(md) else ""
+                # RapidOCR's to_markdown emits a localized "no text detected"
+                # placeholder when detection is empty; drop it so empty pages
+                # yield empty output rather than a localized message.
+                if text and ("没有检测到" in str(text) or "未检测" in str(text)):
                     text = ""
             if text and text.strip():
                 parts.append("## Page %d\n\n%s" % (i + 1, text.strip()))

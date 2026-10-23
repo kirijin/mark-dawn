@@ -53,7 +53,7 @@ export_pipeline_env() {
     export MARK_DAWN_CONVERTER="$CONVERTER"
     export MARK_DAWN_STATE_FILE="$LOG_DIR/state.json"
     export MARK_DAWN_LANGS="$LANGS"
-    # venv/bin must precede PATH so the markitdown/ocrmypdf subprocesses resolve.
+    # venv/bin must precede PATH so the markitdown subprocess resolves.
     export PATH="$VENV_DIR/bin:$PATH"
 }
 

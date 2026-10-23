@@ -79,9 +79,6 @@ $Script:MSYS2_SHA256   = "c105946e64e08f099ac0e4647461ce762b95333ad211777666476a
 
 # MSYS2 tool packages to install via pacman (no Python packages!)
 $Script:MSYS2_TOOL_PACKAGES = @(
-    "mingw-w64-x86_64-tesseract-ocr"
-    "mingw-w64-x86_64-ghostscript"
-    "mingw-w64-x86_64-qpdf"
     "mingw-w64-x86_64-djvulibre"
 )
 
@@ -228,4 +225,6 @@ foreach ($m in $moduleNames) {
 }
 
 # --- Entry point --------------------------------------------------------
+# OCR is now pure-Python (RapidOCR); no tesseract/ghostscript/qpdf needed.
+$Script:NoOcr = $true
 Main

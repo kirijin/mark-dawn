@@ -428,15 +428,11 @@ function Step-InitMsys2 {
 }
 
 function Step-InstallMsys2Tools {
-    Write-Step "9/15" "Installing system tools via pacman (tesseract, ghostscript, qpdf)..."
+    Write-Step "9/15" "Installing system tools via pacman (djvulibre)..."
 
     try {
-        $ocrPackages = @("mingw-w64-x86_64-tesseract-ocr", "mingw-w64-x86_64-ghostscript", "mingw-w64-x86_64-qpdf", "mingw-w64-x86_64-djvulibre")
         $pkgs = $Script:MSYS2_TOOL_PACKAGES
-        if ($Script:NoOcr) {
-            $pkgs = $pkgs | Where-Object { $_ -notin $ocrPackages }
-            Write-Log "Debug" "NoOcr: removed OCR packages from tool install list" -NoConsole
-        }
+        # OCR is now pure-Python (RapidOCR); no tesseract/ghostscript/qpdf to filter.
         $pkgList = $pkgs -join " "
         if (-not $pkgs) {
             Write-Info "No tool packages to install"
@@ -484,14 +480,9 @@ pacman -S --noconfirm --needed --disable-download-timeout \
         }
         if ($lastError) { throw $lastError }
 
-        # Verify critical binaries exist (skip OCR tools if -NoOcr)
+        # Verify critical binaries exist
         $checks = @()
-        $checks += @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\tesseract.exe"; Name = "tesseract" }
-        $checks += @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\gs.exe";         Name = "ghostscript" }
-        $checks += @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\qpdf.exe";       Name = "qpdf" }
-        if ($Script:NoOcr) {
-            $checks = $checks | Where-Object { $_.Name -notin @("tesseract", "ghostscript", "qpdf") }
-        }
+        $checks += @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\ddjvu.exe"; Name = "djvulibre" }
         $missing = @()
         foreach ($check in $checks) {
             if (-not (Test-Path $check.Path -PathType Leaf)) {
@@ -691,15 +682,7 @@ function Step-DownloadTessdata {
         Write-Log "Warn" "Failed to download language models: $($failed -join ', ')"
     }
 
-    # Copy tesseract config files from MSYS2 (needed for PDF/TXT output modes)
-    $msys2Configs = Join-PathSafe $Script:_msys2Dir "mingw64\share\tessdata\configs"
-    $ourConfigs = Join-PathSafe $Script:_tessdataDir "configs"
-    if (Test-Path $msys2Configs -PathType Container) {
-        Ensure-Directory $ourConfigs
-        Copy-Item -Path "$msys2Configs\*" -Destination $ourConfigs -Force -Recurse -ErrorAction SilentlyContinue
-        Write-Log "Debug" "Copied tesseract config files to: $ourConfigs" -NoConsole
-    }
-
+    # OCR is now pure-Python (RapidOCR); no tesseract config files needed.
     Set-InstallState -Step "tessdata_downloaded" -Status "ok"
 }
 
@@ -765,13 +748,8 @@ function Step-Verify {
     $checks = @(
         @{ Path = $Script:_pythonExe;                                Name = "python.exe" }
         @{ Path = $Script:_launcherPath;                             Name = "mark-dawn.bat" }
+        @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\ddjvu.exe"; Name = "ddjvu (djvulibre)" }
     )
-    if (-not $Script:NoOcr) {
-        $checks += @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\tesseract.exe"; Name = "tesseract" }
-        $checks += @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\gs.exe";        Name = "ghostscript" }
-        $checks += @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\qpdf.exe";      Name = "qpdf" }
-        $checks += @{ Path = Join-PathSafe $Script:_msys2Dir "mingw64\bin\ddjvu.exe";     Name = "ddjvu (djvulibre)" }
-    }
     foreach ($check in $checks) {
         if (-not (Test-Path $check.Path -PathType Leaf)) {
             $failures += "Missing: $($check.Name) at $($check.Path)"
@@ -794,6 +772,7 @@ function Step-Verify {
         $code = @"
 import sys
 import pymupdf4llm; print('pymupdf4llm ok')
+import rapidocr; print('rapidocr ok')
 import markitdown; print('markitdown ok')
 import watchdog; print('watchdog ok')
 "@

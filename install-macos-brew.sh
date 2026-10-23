@@ -210,30 +210,30 @@ fi
 # --- [4/7] Install system packages via brew ----------------------------------
 if ! $ARG_SKIP_BREW; then
     step "4/7" "Installing system packages via brew..."
-    info "ocrmypdf + tesseract-lang + djvulibre + pandoc"
+    info "djvulibre + pandoc (OCR is pure-Python via RapidOCR)"
 
     if $IS_REINSTALL && ! $ARG_FORCE; then
         # Quick check: are critical tools present?
         MISSING=""
-        for cmd in ocrmypdf tesseract pandoc djvutxt; do
+        for cmd in pandoc djvutxt; do
             command -v "$cmd" &>/dev/null || MISSING="$MISSING $cmd"
         done
         if [[ -z "$MISSING" ]]; then
             ok "All system tools already installed (use --force to reinstall)"
         else
             info "Missing:${MISSING} — installing..."
-            brew install ocrmypdf tesseract-lang djvulibre pandoc 2>&1 | tail -3 || true
+            brew install djvulibre pandoc 2>&1 | tail -3 || true
             ok "System packages installed"
         fi
     else
-        brew install ocrmypdf tesseract-lang djvulibre pandoc 2>&1 | tail -3 || {
+        brew install djvulibre pandoc 2>&1 | tail -3 || {
             warn "Brew install had issues — some tools may need manual install"
         }
         ok "System packages installed"
     fi
 
     # Verify
-    for cmd in ocrmypdf tesseract pandoc djvutxt; do
+    for cmd in pandoc djvutxt; do
         if ! command -v "$cmd" &>/dev/null; then
             warn "$cmd not found in PATH after brew install"
         fi
@@ -386,7 +386,7 @@ VFAIL=0
 [[ -f "$VENV_DIR/bin/python" ]] && ok "Python venv" || { warn "Venv missing"; VFAIL=1; }
 [[ -f "$CONFIG_FILE" ]] && ok "Config present" || { warn "Config missing"; VFAIL=1; }
 "$VENV_DIR/bin/python" -c "import pymupdf4llm" 2>/dev/null && ok "pymupdf4llm importable" || warn "pymupdf4llm import failed"
-command -v tesseract &>/dev/null && ok "Tesseract available" || warn "tesseract not in PATH"
+"$VENV_DIR/bin/python" -c "import rapidocr" 2>/dev/null && ok "RapidOCR importable" || warn "RapidOCR import failed"
 command -v pandoc &>/dev/null && ok "pandoc available" || warn "pandoc not in PATH"
 
 if [[ "$VFAIL" -gt 0 ]]; then

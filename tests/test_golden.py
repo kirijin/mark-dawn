@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 """Golden-file regression tests for the conversion pipeline.
 
-Runs only when the real dependencies (pymupdf4llm, and ocrmypdf for scanned
+Runs only when the real dependencies (pymupdf4llm, and rapidocr for scanned
 inputs) are importable/executable. Otherwise skipped, so the unit suite stays
 green in minimal environments.
 """

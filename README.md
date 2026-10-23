@@ -43,7 +43,7 @@ Apple's native `container` CLI (ships with macOS 26). Per-container microVMs via
 curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.sh | bash
 ```
 The universal installer auto-detects your macOS version. Pre-26 → runs the Homebrew path:
-1. `brew install ocrmypdf tesseract-lang djvulibre pandoc`
+1. `brew install djvulibre pandoc` (OCR is pure-Python via RapidOCR)
 2. Creates `~/Library/Application Support/mark-dawn/venv/` with full tool stack
 3. Deploys the native launcher to `~/.local/bin/`
 Zero container overhead — pure native Unix processes.
@@ -61,7 +61,7 @@ curl.exe -LO "https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.p
 .\install.ps1
 ```
 
-Downloads embedded Python + MSYS2 (tesseract, ghostscript, djvulibre). No admin, no package manager. Self-contained in `%USERPROFILE%\mark-dawn\`.
+Downloads embedded Python + MSYS2 (djvulibre). No admin, no package manager. Self-contained in `%USERPROFILE%\mark-dawn\`. OCR is pure-Python (RapidOCR).
 
 ---
 
@@ -153,7 +153,7 @@ graph LR
 
 `convert_pdf.py` opens a PDF with MuPDF, measures average text chars/page:
 - **>100 chars/page** → digital. Direct pymupdf4llm conversion (fast, clean)
-- **≤100 chars/page** → scanned. Renders each page at 200 DPI, feeds to ocrmypdf, then pymupdf4llm
+- **≤100 chars/page** → scanned. Renders each page at 200 DPI, feeds to RapidOCR (ONNX), then joins per-page text.
 - **Scanned render capped at 50 pages** (configurable via `MARK_DAWN_MAX_PAGES`)
 - **Max dimension**: 2400px (configurable via `MARK_DAWN_MAX_DIM`)
 
@@ -212,7 +212,7 @@ mark-dawn start
   → podman run -d --name mark-dawn [volumes] <image> watcher
 ```
 - **Runtime**: Podman or Docker. No daemon, rootless.
-- **Image**: Based on `jbarlow83/ocrmypdf`, + pandoc + tessdata + pymupdf4llm + markitdown + watchdog
+- **Image**: Based on `python:3.12-slim`, + pandoc. OCR is pure-Python (RapidOCR + onnxruntime). No tesseract/ghostscript/qpdf.
 - **Watcher persistence**: systemd user service (`mark-dawn install-systemd`)
 - **Idle**: no RAM unless running (container starts on demand)
 
@@ -234,7 +234,7 @@ mark-dawn start
   → ~/Library/Application Support/mark-dawn/venv/bin/watcher.py
 ```
 - **Runtime**: Native macOS processes — no VM, no container tax
-- **System deps**: ocrmypdf, tesseract-lang, djvulibre, pandoc (installed via brew)
+- **System deps**: pandoc, djvulibre (OCR is pure-Python via RapidOCR)
 - **Python deps**: pymupdf4llm, markitdown[all], watchdog, python-docx (in venv)
 - **Watcher persistence**: launchd user service (`mark-dawn install-service`)
 - **Idle**: ~50 MB (Python interpreter + watchdog)
@@ -243,7 +243,7 @@ mark-dawn start
 
 - **Runtime**: Native Windows processes, system tools via MSYS2 (mingw64)
 - **No admin required**: self-contained in `%USERPROFILE%\mark-dawn\`
-- **System deps**: tesseract, ghostscript, qpdf, djvulibre (via MSYS2 pacman)
+- **System deps**: djvulibre (via MSYS2 pacman); OCR is pure-Python (RapidOCR)
 - **Python**: embedded Python 3.12 (SHA256-verified download)
 - **Watcher persistence**: Windows Scheduled Task (`install-task`)
 
@@ -343,10 +343,7 @@ Default languages are `eng+rus+fra+deu+chi_sim+jpn`. To add more:
 mark-dawn config set --langs eng+spa+ara+por
 mark-dawn restart
 ```
-For macOS brew+venv, also install the Tesseract language pack:
-```bash
-brew install tesseract-lang
-```
+Language codes are Tesseract-style (`eng`, `rus`, `chi_sim`, ...) and are mapped to RapidOCR language types internally; no separate language pack install needed.
 
 ### `--docx` flag ignored
 

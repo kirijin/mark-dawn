@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 set -e
 
-# Guarantee a writable temp directory for Ghostscript/Tesseract
+# Guarantee a writable temp directory
 mkdir -p /workspace/tmp
 export TMPDIR=/workspace/tmp
 export TEMP=/workspace/tmp

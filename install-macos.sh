@@ -63,7 +63,7 @@ if [[ "$MACOS_MAJOR" -ge 26 ]]; then
 else
     step "2/3" "macOS pre-26 detected — using Homebrew + Python venv path"
     echo ""
-    echo "  Installs native tools via Homebrew (ocrmypdf, djvulibre, pandoc)."
+    echo "  Installs native tools via Homebrew (djvulibre, pandoc). OCR is pure-Python (RapidOCR)."
     echo "  Creates Python virtualenv for pymupdf4llm, markitdown, watchdog."
     echo "  Zero VM overhead — runs as native macOS processes."
     echo ""
