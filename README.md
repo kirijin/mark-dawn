@@ -114,9 +114,20 @@ mark-dawn help                  # Full command reference
 | `.djvu` | djvutxt / ddjvu | Native text extraction if available. Falls back to page render → OCR |
 | `.tiff .jpeg .png .bmp .webp` | PIL → PDF → OCR | Rasterized to PDF at 300 DPI, then OCR'd |
 | `.docx .xlsx .pptx .html .csv .rtf` | markitdown | Microsoft's document parser. Fast, no OCR |
+| *(plugin)* | `HANDLERS` | Drop a `.py` into `~/.config/mark-dawn/plugins/` or set `MARK_DAWN_PLUGINS` — see Plugins below |
 
 4. Result: `Research/filename.md` (or `.docx` if `--docx` / in `2docx/`)
 5. Original file deleted from Inbox on success, moved to `Inbox_Failed/` on failure
+
+### Plugins
+
+`convert_pdf.py` dispatches by extension through a `HANDLERS` registry. Built-ins cover the formats above; you can add your own without touching core code:
+
+- Drop a handler module into `~/.config/mark-dawn/plugins/` (or set `MARK_DAWN_PLUGIN_DIR`).
+- Or set `MARK_DAWN_PLUGINS=module.name` (comma-separated) for importable modules.
+- Or ship a pip package exposing a `mark_dawn.handlers` entry point.
+
+A handler is any object with `.extensions` (set of suffixes) and `.convert(file_path, out_md)`. See `examples/plugin_txt.py`.
 
 ### OCR pipeline
 
@@ -174,6 +185,20 @@ All via environment variables:
 | `MARK_DAWN_CONVERTER` | platform path | Container: `/usr/local/bin/convert_pdf.py`; macOS brew: `$VENV_DIR/bin/convert_pdf.py` |
 
 Also settable via `mark-dawn config set --data-dir ~/Docs --langs eng+spa`.
+
+### Advanced / internal
+
+| Variable | Default | Used by |
+|----------|---------|---------|
+| `MARK_DAWN_MAX_INPUT_MB` | `200` | Input size cap |
+| `MARK_DAWN_MAX_PAGES` | `50` | Max PDF pages (already listed) |
+| `MARK_DAWN_WORKERS` | `1` | Watcher worker threads |
+| `MARK_DAWN_STATUS_PORT` | `0` | Watcher HTTP status endpoint (0 = off) |
+| `MARK_DAWN_KEEP_RAW` | unset | Write `.raw` sidecar with uncleaned text |
+| `MARK_DAWN_LLM_URL` | unset | Optional LLM cleanup pass endpoint |
+| `MARK_DAWN_LLM_CLEANUP` | unset | Enable LLM cleanup (`1`) |
+| `MARK_DAWN_PLUGIN_DIR` | `~/.config/mark-dawn/plugins` | Plugin discovery dir |
+| `MARK_DAWN_PLUGINS` | unset | Comma-separated plugin modules |
 
 ---
 
@@ -239,6 +264,18 @@ mark-dawn/
 ├── convert_pdf.py                 # Core converter — PDF/DjVu/image → markdown
 ├── watcher.py                     # Folder watcher (watchdog-based)
 ├── docx_styler.py                 # python-docx styled DOCX builder
+│
+├── examples/
+│   └── plugin_txt.py              # Reference plugin (txt → markdown)
+│
+├── tests/                         # pytest suite (unit + golden + integration)
+│
+├── windows/                       # PowerShell modules loaded by mark-dawn.ps1
+│   ├── 00-bootstrap.ps1
+│   ├── 10-steps.ps1
+│   ├── 20-commands.ps1
+│   ├── 30-templates.ps1
+│   └── 40-ui.ps1
 │
 ├── entrypoint.sh                  # Container entrypoint (dispatches watcher/convert)
 ├── Dockerfile                     # Container image definition
