@@ -141,7 +141,7 @@ graph LR
     B -->|DjVu| F{djvutxt works?}
     F -->|yes| G[native text]
     F -->|no| D
-    D --> H[RapidOCR (ONNX)]
+    D --> H["RapidOCR (ONNX)"]
     H --> C
     C --> I[.md file]
     I --> J{--docx?}
