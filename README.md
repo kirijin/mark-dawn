@@ -11,30 +11,23 @@
 
 mark-dawn watches a folder and converts anything you drop in: scanned PDFs (OCR), digital PDFs, DjVu, photos of documents, Office files. Optional styled DOCX output.
 
-| Platform | Status | Install | Runtime |
-|----------|--------|---------|---------|
-| Linux | stable | `curl ... install.sh \| bash` | Podman/Docker container |
-| macOS 26+ | new | `curl ... install-macos-container.sh \| bash` | Apple Container |
-| macOS pre-26 | new | `curl ... install.sh \| bash` | Homebrew + Python venv |
-| Windows | verified | PowerShell one-liner | MSYS2 portable, no admin |
-
 ## Install
 
 All installers need no root/sudo and put `mark-dawn` in `~/.local/bin/`.
 
-Linux (any distro with podman or docker):
+Linux (any distro with podman or docker) — Podman/Docker container:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.sh | bash
 ```
 
-macOS 26+ (Tahoe):
+macOS 26+ (Tahoe) — Apple Container:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install-macos-container.sh | bash
 ```
 
-macOS pre-26: the universal installer auto-detects and runs the Homebrew path (pandoc + djvulibre via brew, Python venv with the rest).
+macOS pre-26 — Homebrew + Python venv: the universal installer auto-detects and runs the Homebrew path (pandoc + djvulibre via brew, Python venv with the rest).
 
-Windows (PowerShell 3+):
+Windows (PowerShell 3+) — MSYS2 portable, no admin:
 ```powershell
 powershell -c "iwr -Uri 'https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.ps1' -UseBasicParsing | iex"
 ```
