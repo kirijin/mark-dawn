@@ -6,371 +6,130 @@
 </p>
 
 <p align="center">
-  <b>mark-dawn</b> — <i>drop a document, get clean Markdown.</i>
+  <b>mark-dawn</b> — drop a document, get clean Markdown.
 </p>
 
----
+mark-dawn watches a folder and converts anything you drop in: scanned PDFs (OCR), digital PDFs, DjVu, photos of documents, Office files. Optional styled DOCX output.
 
-**mark-dawn** watches a folder, picks up any document you drop in, and converts it to readable Markdown (or styled DOCX). Handles scanned PDFs (OCR), digital PDFs, DjVu, photos of documents, and Office files — all through one pipeline.
-
-| Platform | Status | Install method | Runtime |
-|----------|--------|---------------|---------|
-| Linux | ✅ stable | `curl ... install.sh \| bash` | Podman/Docker container |
-| macOS 26+ | ✅ new | `curl ... install-macos-container.sh \| bash` | Apple Container (native, ~51 MB idle) |
-| macOS pre-26 | ✅ new | `curl ... install.sh \| bash` | Homebrew + Python venv (no VM) |
-| Windows | ✅ verified (converter + 56 tests pass on Win 11 VM) | PowerShell | MSYS2 portable (no admin) |
-
----
+| Platform | Status | Install | Runtime |
+|----------|--------|---------|---------|
+| Linux | stable | `curl ... install.sh \| bash` | Podman/Docker container |
+| macOS 26+ | new | `curl ... install-macos-container.sh \| bash` | Apple Container |
+| macOS pre-26 | new | `curl ... install.sh \| bash` | Homebrew + Python venv |
+| Windows | verified | PowerShell one-liner | MSYS2 portable, no admin |
 
 ## Install
 
-All installers are single-command, need no root/sudo, and put `mark-dawn` in `~/.local/bin/`.
+All installers need no root/sudo and put `mark-dawn` in `~/.local/bin/`.
 
-### 🐧 **Linux** (any distro with podman or docker)
+Linux (any distro with podman or docker):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.sh | bash
 ```
-Detects podman → docker. Downloads the container launcher, pulls the image on first start.
 
-### 🍎 **macOS 26+ (Tahoe)** — Apple Container
+macOS 26+ (Tahoe):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install-macos-container.sh | bash
 ```
-Apple's native `container` CLI (ships with macOS 26). Per-container microVMs via Virtualization.framework. Fast startup (~1s), negligible idle RAM. No Docker Desktop, no Homebrew needed.
 
-### 🍎 **macOS pre-26** — Homebrew + Python
-```bash
-curl -fsSL https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.sh | bash
-```
-The universal installer auto-detects your macOS version. Pre-26 → runs the Homebrew path:
-1. `brew install djvulibre pandoc` (OCR is pure-Python via RapidOCR)
-2. Creates `~/Library/Application Support/mark-dawn/venv/` with full tool stack
-3. Deploys the native launcher to `~/.local/bin/`
-Zero container overhead — pure native Unix processes.
+macOS pre-26: the universal installer auto-detects and runs the Homebrew path (pandoc + djvulibre via brew, Python venv with the rest).
 
-### 🪟 **Windows** — MSYS2 portable (no admin)
-
-**One-liner (PowerShell 3+):**
+Windows (PowerShell 3+):
 ```powershell
 powershell -c "iwr -Uri 'https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.ps1' -UseBasicParsing | iex"
 ```
 
-**Or download + run:**
-```powershell
-curl.exe -LO "https://raw.githubusercontent.com/kirijin/mark-dawn/main/install.ps1"
-.\install.ps1
-```
-
-Downloads embedded Python + MSYS2 (djvulibre). No admin, no package manager. Self-contained in `%USERPROFILE%\mark-dawn\`. OCR is pure-Python (RapidOCR).
-
----
+Self-contained in `%USERPROFILE%\mark-dawn\`. No admin, no package manager.
 
 ## Use
 
-The CLI is the same on every platform:
-
 ```bash
-mark-dawn start                 # Background watcher — watches ~/Documents/Inbox
-mark-dawn stop                  # Stop the watcher
-mark-dawn convert file.pdf      # Convert one file, get result in ~/Documents/Research/
-mark-dawn convert scan.djvu --docx   # Convert to DOCX
-mark-dawn convert scan.pdf --langs eng+rus  # OCR with specific languages
-mark-dawn logs                  # Follow watcher logs (Ctrl+C to exit)
-mark-dawn status                # Show runtime state + directory contents
-mark-dawn update                # Pull latest image / update Python packages
-mark-dawn menu                  # Interactive numbered menu (Linux)
-mark-dawn install-service      # Install as launchd (macOS) / `install-systemd` (Linux)
-mark-dawn help                  # Full command reference
+mark-dawn start                 # watcher on ~/Documents/Inbox
+mark-dawn stop
+mark-dawn convert file.pdf      # → ~/Documents/Research/file.md
+mark-dawn convert scan.djvu --docx
+mark-dawn convert scan.pdf --langs eng+rus
+mark-dawn logs                  # follow watcher logs
+mark-dawn status
+mark-dawn update
 ```
 
-**Windows:**
+Windows:
 ```powershell
 & "$env:USERPROFILE\mark-dawn\mark-dawn.bat" start
 & "$env:USERPROFILE\mark-dawn\mark-dawn.bat" convert "C:\doc.pdf"
 ```
 
----
-
 ## How it works
 
-### The flow
+Drop a file into `Inbox/` (or `Inbox/2docx/` for DOCX, `Inbox/2md/` for explicit MD routing). The watcher picks it up after a 3s debounce.
 
-```
-~/Documents/
-├── Inbox/            ─── drop files here
-│   ├── 2md/              → same default output as Inbox (functionally equivalent)
-│   └── 2docx/            → always converted to .docx
-├── Research/          ← converted files appear here
-└── Inbox_Failed/      ← files that failed conversion
-```
+| Extension | Handler |
+|-----------|---------|
+| `.pdf` | digital (pymupdf4llm) or scanned (fitz render → RapidOCR) |
+| `.djvu` | djvutxt, fallback to render → OCR |
+| images | RapidOCR directly |
+| Office / html / csv / rtf | markitdown |
+| plugins | `HANDLERS` registry (see below) |
 
-1. You drop a file into `Inbox/` (or `Inbox/2docx/` — or `Inbox/2md/` for explicit MD routing)
-2. Watcher detects it after 3s debounce (avoids mid-copy triggers)
-3. File type is identified by extension:
-
-| Extension | Handler | Notes |
-|-----------|---------|-------|
-| `.pdf` | Smart split | **Digital** (avg >100 chars/page) → pymupdf4llm direct. **Scanned** → render pages via fitz → OCR via RapidOCR (ONNX) |
-| `.djvu` | djvutxt / ddjvu | Native text extraction if available. Falls back to page render → OCR |
-| `.tiff .jpeg .png .bmp .webp` | RapidOCR (ONNX) | Direct OCR on the image, no PDF intermediate |
-| `.docx .xlsx .pptx .html .csv .rtf` | markitdown | Microsoft's document parser. Fast, no OCR |
-| *(plugin)* | `HANDLERS` | Drop a `.py` into `~/.config/mark-dawn/plugins/` or set `MARK_DAWN_PLUGINS` — see Plugins below |
-
-4. Result: `Research/filename.md` (or `.docx` if `--docx` / in `2docx/`)
-5. Original file deleted from Inbox on success, moved to `Inbox_Failed/` on failure
+Output lands in `Research/`. Original removed on success, moved to `Inbox_Failed/` on failure.
 
 ### Plugins
 
-`convert_pdf.py` dispatches by extension through a `HANDLERS` registry. Built-ins cover the formats above; you can add your own without touching core code:
+Add a handler without touching core: drop a module into `~/.config/mark-dawn/plugins/`, set `MARK_DAWN_PLUGINS=module.name`, or ship a pip package with a `mark_dawn.handlers` entry point. A handler needs `.extensions` (set of suffixes) and `.convert(file_path, out_md)`. See `examples/plugin_txt.py`.
 
-- Drop a handler module into `~/.config/mark-dawn/plugins/` (or set `MARK_DAWN_PLUGIN_DIR`).
-- Or set `MARK_DAWN_PLUGINS=module.name` (comma-separated) for importable modules.
-- Or ship a pip package exposing a `mark_dawn.handlers` entry point.
+### OCR
 
-A handler is any object with `.extensions` (set of suffixes) and `.convert(file_path, out_md)`. See `examples/plugin_txt.py`.
+Six languages by default: `eng+rus+fra+deu+chi_sim+jpn`. Set via `MARK_DAWN_LANGS=eng+spa+ara+por`. Codes are Tesseract-style and mapped to RapidOCR types internally — no separate language pack install.
 
-### OCR pipeline
-
-```mermaid
-graph LR
-    A[Input file] --> B{Type?}
-    B -->|Digital PDF| C[pymupdf4llm]
-    B -->|Scanned PDF| D[fitz raster]
-    B -->|Image| D
-    B -->|Office doc| E[markitdown]
-    B -->|DjVu| F{djvutxt works?}
-    F -->|yes| G[native text]
-    F -->|no| D
-    D --> H["RapidOCR (ONNX)"]
-    H --> C
-    C --> I[.md file]
-    I --> J{--docx?}
-    J -->|yes| K[python-docx / pandoc]
-    K --> L[.docx file]
-```
-
-### Smart PDF detection
-
-`convert_pdf.py` opens a PDF with MuPDF, measures average text chars/page:
-- **>100 chars/page** → digital. Direct pymupdf4llm conversion (fast, clean)
-- **≤100 chars/page** → scanned. Renders each page at 200 DPI, feeds to RapidOCR (ONNX), then joins per-page text.
-- **Scanned render capped at 50 pages** (configurable via `MARK_DAWN_MAX_PAGES`)
-- **Max dimension**: 2400px (configurable via `MARK_DAWN_MAX_DIM`)
-
-### Languages
-
-OCR supports 6 languages by default, set via `MARK_DAWN_LANGS`:
-```
-eng+rus+fra+deu+chi_sim+jpn
-```
-Add your own: `MARK_DAWN_LANGS=eng+spa+ara+por mark-dawn start`
-
----
+Digital vs scanned PDF detection: MuPDF measures average text chars/page. Above 100 → digital (fast path). At or below → render at 200 DPI and OCR. Scanned renders capped at 50 pages (`MARK_DAWN_MAX_PAGES`), max dimension 2400px (`MARK_DAWN_MAX_DIM`).
 
 ## Configuration
 
-All via environment variables:
+Environment variables (also `mark-dawn config set --data-dir ~/Docs --langs eng+spa`):
 
-| Variable | Default | Used by |
+| Variable | Default | Purpose |
 |----------|---------|---------|
-| `MARK_DAWN_DATA_DIR` | `~/Documents` | All — base data directory |
-| `MARK_DAWN_LANGS` | `eng+rus+fra+deu+chi_sim+jpn` | OCR language pack |
-| `MARK_DAWN_OUT_DIR` | `$DATA_DIR/Research` | Output destination |
-| `MARK_DAWN_INBOX_DIR` | `$DATA_DIR/Inbox` | Input watch folder |
-| `MARK_DAWN_FAILED_DIR` | `$DATA_DIR/Inbox_Failed` | Failed conversions |
-| `MARK_DAWN_MAX_PAGES` | `50` | Max PDF pages to process |
-| `MARK_DAWN_MAX_DIM` | `2400` | Max image dimension (px) |
-| `MARK_DAWN_IMAGE` | `docker.io/kirijin/mark-dawn:latest` | Container image (Linux / macOS 26+) |
-| `MARK_DAWN_INSTALL_DIR` | `~/Library/Application Support/mark-dawn` | macOS brew+venv home |
-| `MARK_DAWN_CONVERTER` | platform path | Container: `/usr/local/bin/convert_pdf.py`; macOS brew: `$VENV_DIR/bin/convert_pdf.py` |
+| `MARK_DAWN_DATA_DIR` | `~/Documents` | base data directory |
+| `MARK_DAWN_LANGS` | `eng+rus+fra+deu+chi_sim+jpn` | OCR languages |
+| `MARK_DAWN_INBOX_DIR` | `$DATA_DIR/Inbox` | input watch folder |
+| `MARK_DAWN_OUT_DIR` | `$DATA_DIR/Research` | output destination |
+| `MARK_DAWN_FAILED_DIR` | `$DATA_DIR/Inbox_Failed` | failed conversions |
+| `MARK_DAWN_MAX_PAGES` | `50` | max PDF pages |
+| `MARK_DAWN_MAX_DIM` | `2400` | max image dimension (px) |
+| `MARK_DAWN_MAX_INPUT_MB` | `200` | input size cap |
+| `MARK_DAWN_WORKERS` | `1` | watcher threads |
+| `MARK_DAWN_STATUS_PORT` | `0` | HTTP status endpoint (0 = off) |
+| `MARK_DAWN_KEEP_RAW` | unset | write `.raw` sidecar |
+| `MARK_DAWN_LLM_URL` | unset | optional LLM cleanup endpoint |
+| `MARK_DAWN_LLM_CLEANUP` | unset | enable LLM cleanup (`1`) |
+| `MARK_DAWN_PLUGIN_DIR` | `~/.config/mark-dawn/plugins` | plugin discovery |
+| `MARK_DAWN_PLUGINS` | unset | comma-separated plugin modules |
+| `MARK_DAWN_IMAGE` | `docker.io/kirijin/mark-dawn:latest` | container image |
 
-Also settable via `mark-dawn config set --data-dir ~/Docs --langs eng+spa`.
-
-### Advanced / internal
-
-| Variable | Default | Used by |
-|----------|---------|---------|
-| `MARK_DAWN_MAX_INPUT_MB` | `200` | Input size cap |
-| `MARK_DAWN_MAX_PAGES` | `50` | Max PDF pages (already listed) |
-| `MARK_DAWN_WORKERS` | `1` | Watcher worker threads |
-| `MARK_DAWN_STATUS_PORT` | `0` | Watcher HTTP status endpoint (0 = off) |
-| `MARK_DAWN_KEEP_RAW` | unset | Write `.raw` sidecar with uncleaned text |
-| `MARK_DAWN_LLM_URL` | unset | Optional LLM cleanup pass endpoint |
-| `MARK_DAWN_LLM_CLEANUP` | unset | Enable LLM cleanup (`1`) |
-| `MARK_DAWN_PLUGIN_DIR` | `~/.config/mark-dawn/plugins` | Plugin discovery dir |
-| `MARK_DAWN_PLUGINS` | unset | Comma-separated plugin modules |
-
----
-
-## Architecture by platform
-
-### 🐧 Linux (container)
-
-```
-mark-dawn start
-  → podman pull docker.io/kirijin/mark-dawn:latest
-  → podman run -d --name mark-dawn [volumes] <image> watcher
-```
-- **Runtime**: Podman or Docker. No daemon, rootless.
-- **Image**: Based on `python:3.12-slim`, + pandoc. OCR is pure-Python (RapidOCR + onnxruntime). No tesseract/ghostscript/qpdf.
-- **Watcher persistence**: systemd user service (`mark-dawn install-systemd`)
-- **Idle**: no RAM unless running (container starts on demand)
-
-### 🍎 macOS 26+ (Apple Container)
-
-```
-mark-dawn start
-  → container run -d --rm --name mark-dawn [volumes] --arch linux/arm64 <image> watcher
-```
-- **Runtime**: Apple's `container` CLI (ships with macOS 26 Tahoe)
-- **VM model**: One microVM per container via Virtualization.framework. ~51 MB idle when no container runs.
-- **Watcher persistence**: launchd user service (`mark-dawn install-service`)
-- **Image**: Same Docker Hub image as Linux — pulled via `container image pull`
-
-### 🍎 macOS pre-26 (Homebrew + Python)
-
-```
-mark-dawn start
-  → ~/Library/Application Support/mark-dawn/venv/bin/watcher.py
-```
-- **Runtime**: Native macOS processes — no VM, no container tax
-- **System deps**: pandoc, djvulibre (OCR is pure-Python via RapidOCR)
-- **Python deps**: pymupdf4llm, markitdown[all], watchdog, python-docx (in venv)
-- **Watcher persistence**: launchd user service (`mark-dawn install-service`)
-- **Idle**: ~50 MB (Python interpreter + watchdog)
-
-### 🪟 Windows (MSYS2 portable)
-
-- **Runtime**: Native Windows processes, system tools via MSYS2 (mingw64)
-- **No admin required**: self-contained in `%USERPROFILE%\mark-dawn\`
-- **System deps**: djvulibre (via MSYS2 pacman); OCR is pure-Python (RapidOCR)
-- **Python**: embedded Python 3.12 (SHA256-verified download)
-- **Watcher persistence**: Windows Scheduled Task (`install-task`)
-
----
-
-## Project structure
-
-```
-mark-dawn/
-├── install.sh                     # Linux + macOS universal entry point
-├── install-macos.sh               # macOS version dispatcher (26+ vs pre-26)
-├── install-macos-container.sh     # macOS 26+ installer (Apple Container)
-├── install-macos-brew.sh          # macOS pre-26 installer (Homebrew + venv)
-├── mark-dawn.sh                   # Linux container launcher (also macOS guard)
-├── install.ps1                    # Windows compat shim → mark-dawn.ps1
-├── mark-dawn.ps1                  # Windows installer (the real one)
-│
-├── convert_pdf.py                 # Core converter — PDF/DjVu/image → markdown
-├── watcher.py                     # Folder watcher (watchdog-based)
-├── docx_styler.py                 # python-docx styled DOCX builder
-│
-├── examples/
-│   └── plugin_txt.py              # Reference plugin (txt → markdown)
-│
-├── tests/                         # pytest suite (unit + golden + integration)
-│
-├── windows/                       # PowerShell modules loaded by mark-dawn.ps1
-│   ├── 00-bootstrap.ps1
-│   ├── 10-steps.ps1
-│   ├── 20-commands.ps1
-│   ├── 30-templates.ps1
-│   └── 40-ui.ps1
-│
-├── entrypoint.sh                  # Container entrypoint (dispatches watcher/convert)
-├── Dockerfile                     # Container image definition
-│
-├── libexec/
-│   ├── mark-dawn-macos            # macOS brew+venv launcher
-│   └── mark-dawn-container        # macOS Apple Container launcher
-│
-├── requirements.txt               # Pinned Python deps (shared by all platforms)
-│
-├── logo.png                       # Project logo
-├── LICENCE                        # License
-└── README.md                      # This file
-```
-
----
-
-## Building locally
+## Build locally
 
 ```bash
 git clone https://github.com/kirijin/mark-dawn.git
 cd mark-dawn
-
-# Container image (Linux / macOS 26+)
 podman build -t mark-dawn:latest .
-MARK_DAWN_IMAGE=localhost/mark-dawn:latest ./mark-dawn.sh start
-
-# Or run Python scripts directly
 pip install pymupdf4llm markitdown[all] watchdog python-docx
 python3 convert_pdf.py ~/doc.pdf
-python3 watcher.py                      # starts the watcher
 ```
-
----
-
-## Comparison at a glance
-
-| | Linux | macOS 26+ | macOS pre-26 | Windows |
-|---|---|---|---|---|
-| **Deploy** | `curl \| bash` | `curl \| bash` | `curl \| bash` | PowerShell |
-| **Engine** | podman/docker | Apple Container | native brew+venv | MSYS2 portable |
-| **Background** | systemd user | launchd | launchd | Scheduled Task |
-| **Idle RAM** | ~0 (cold) | ~51 MB | ~50 MB | ~80 MB |
-| **Image/stack** | Docker Hub | Docker Hub | brew + pip | embedded |
-| **Root/sudo** | no | no | no | no |
-| **OCR languages** | 6 (extensible) | 6 | 6 | 6 (RapidOCR lang types) |
-| **Maturity** | ✅ stable | 🆕 fresh | 🆕 fresh | ✅ verified (Win 11 VM) |
-
----
 
 ## Troubleshooting
 
-### Container won't start (Linux)
-
-Ensure podman/docker is installed and running:
-```bash
-podman info  # should show system info, not errors
-```
-If SELinux blocks volume mounts, the `:Z` flag in the launcher handles it. For rootless podman, verify `~/.local/share/containers/` is on a filesystem with sufficient space.
-
-### OCR is inaccurate or missing languages
-
-Default languages are `eng+rus+fra+deu+chi_sim+jpn`. To add more:
-```bash
-mark-dawn config set --langs eng+spa+ara+por
-mark-dawn restart
-```
-Language codes are Tesseract-style (`eng`, `rus`, `chi_sim`, ...) and are mapped to RapidOCR language types internally; no separate language pack install needed.
-
-### `--docx` flag ignored
-
-This was a bug in `entrypoint.sh` that dropped extra arguments to `convert` — fixed in the current source. If your image predates the fix, rebuild or pull the latest:
-```bash
-mark-dawn update
-```
-
-### macOS: Apple Container image won't start
-
-Ensure your architecture matches:
-```bash
-container run --rm --arch linux/arm64 docker.io/kirijin/mark-dawn:latest uname -m
-```
-Apple Silicon → `arm64`, Intel → `amd64`.
-
-### Windows: portable Python DLL errors
-
-The installer handles `os.add_dll_directory()` for MSYS2 binaries. If you see DLL load errors, run `.\mark-dawn.ps1 -ForceRedownload` to re-extract dependencies.
-
----
+- **Container won't start (Linux)**: ensure podman/docker runs (`podman info`). The launcher handles SELinux `:Z` mounts.
+- **OCR inaccurate / missing languages**: `mark-dawn config set --langs eng+spa+ara+por && mark-dawn restart`.
+- **`--docx` ignored**: old `entrypoint.sh` dropped args — fixed. `mark-dawn update`.
+- **macOS Apple Container won't start**: check arch — `container run --rm --arch linux/arm64 docker.io/kirijin/mark-dawn:latest uname -m`.
+- **Windows DLL errors**: `.\\mark-dawn.ps1 -ForceRedownload`.
 
 ## Credits
 
-- [pymupdf4llm](https://pypi.org/project/pymupdf4llm/) — PDF→Markdown via MuPDF
-- [markitdown](https://pypi.org/project/markitdown/) — Office docs→Markdown (Microsoft)
-- [RapidOCR](https://github.com/RapidAI/RapidOCR) — lightweight ONNX OCR (PP-OCR), replaces Tesseract
-- [onnxruntime](https://onnxruntime.ai/) — inference engine for RapidOCR
+- [pymupdf4llm](https://pypi.org/project/pymupdf4llm/) — PDF→Markdown
+- [markitdown](https://pypi.org/project/markitdown/) — Office docs→Markdown
+- [RapidOCR](https://github.com/RapidAI/RapidOCR) — ONNX OCR, replaces Tesseract
+- [onnxruntime](https://onnxruntime.ai/) — inference engine
 - [djvulibre](https://djvu.sourceforge.net/) — DjVu processing
 - [watchdog](https://pypi.org/project/watchdog/) — filesystem watcher
