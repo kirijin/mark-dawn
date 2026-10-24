@@ -33,7 +33,6 @@ param(
     [switch]$SkipInit,
     [switch]$ForceRedownload,
     [switch]$SkipVerification,
-    [switch]$NoOcr,
     [int]$MaxRetries = 3,
     [int]$TimeoutSec = 300,
     [ValidateSet("Debug", "Info", "Warn", "Error")]
@@ -149,6 +148,4 @@ foreach ($m in $moduleNames) {
 }
 
 # --- Entry point --------------------------------------------------------
-# OCR is now pure-Python (RapidOCR); no tesseract/ghostscript/qpdf needed.
-$Script:NoOcr = $true
 Main
