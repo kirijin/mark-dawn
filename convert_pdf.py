@@ -132,7 +132,6 @@ for _h in (_BuiltinHandler("pdf", {".pdf"}, "_handle_pdf"),
 _INSTALL_DIR = Path(__file__).resolve().parent.parent
 _MSYS2_MINGW = _INSTALL_DIR / ".msys2" / "mingw64" / "bin"
 _MSYS2_USR   = _INSTALL_DIR / ".msys2" / "usr" / "bin"
-_TESSDATA    = _INSTALL_DIR / "tessdata"
 
 
 def _build_env():
@@ -141,21 +140,7 @@ def _build_env():
     extra = [d for d in (str(_MSYS2_MINGW), str(_MSYS2_USR)) if Path(d).is_dir()]
     if extra:
         env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
-    if _TESSDATA.is_dir():
-        env["TESSDATA_PREFIX"] = str(_TESSDATA)
     return env
-
-
-def _find_ocrmypdf():
-    """ocrmypdf executable — PATH first, then the Python Scripts dir (Windows)."""
-    exe = shutil.which("ocrmypdf")
-    if exe:
-        return exe
-    scripts_dir = Path(sys.executable).parent / "Scripts"
-    for cand in (scripts_dir / "ocrmypdf.exe", scripts_dir / "ocrmypdf"):
-        if cand.is_file():
-            return str(cand)
-    return "ocrmypdf"
 
 
 def _unique_path(directory: Path, name: str) -> Path:
@@ -296,21 +281,6 @@ def _pdf_text_ratio(path):
     return t / n if n else 0, n
 
 
-def _ocr_pdf_tesseract(pdf_path, out_md):
-    """OCR a PDF via ocrmypdf, write markdown."""
-    with tempfile.TemporaryDirectory() as td:
-        ocr_out = Path(td) / "ocr.pdf"
-        subprocess.run([
-            _find_ocrmypdf(), "--skip-text", "--deskew", "--clean", "-l", OCRLANGS,
-            "-j", "1", "--output-type", "pdf",
-            str(pdf_path), str(ocr_out),
-        ], capture_output=True, text=True, timeout=600, check=True,
-           env=_build_env())
-        md = pymupdf4llm.to_markdown(str(ocr_out))
-        _atomic_write(out_md, md)
-        print("OCR complete. Converting to Markdown...")
-
-
 # ---------------------------------------------------------------------------
 # RapidOCR engine (lightweight, cross-platform, no Tesseract)
 # ---------------------------------------------------------------------------
@@ -441,12 +411,6 @@ def _handle_pdf(file_path, out_md):
         print("No pages rendered; nothing to convert.", file=sys.stderr)
         sys.exit(1)
 
-    engine = os.environ.get("MARK_DAWN_OCR_ENGINE", "rapidocr").strip().lower()
-    if engine == "tesseract" or not HAS_RAPIDOCR:
-        # Legacy path: ocrmypdf + Tesseract on the original file.
-        _ocr_pdf_tesseract(file_path, out_md)
-        return
-
     _ocr_with_rapidocr(images, out_md)
 
 
@@ -498,13 +462,7 @@ def _handle_djvu(file_path, out_md):
                     ppm.unlink()
             if images:
                 print(f"  Rendered {len(images)} page(s) via ddjvu")
-                engine = os.environ.get("MARK_DAWN_OCR_ENGINE", "rapidocr").strip().lower()
-                if engine == "tesseract" or not HAS_RAPIDOCR:
-                    images[0].save(str(pdf_path), save_all=True,
-                                   append_images=images[1:], format="PDF")
-                    _ocr_pdf_tesseract(pdf_path, out_md)
-                else:
-                    _ocr_with_rapidocr(images, out_md)
+                _ocr_with_rapidocr(images, out_md)
                 return
     print("  DjVu support requires djvulibre-bin (djvutxt + ddjvu + djvused)", file=sys.stderr)
     sys.exit(1)
@@ -517,17 +475,6 @@ def _handle_image(file_path, out_md):
     except Exception as e:
         print(f"Cannot open image: {e}", file=sys.stderr)
         sys.exit(1)
-
-    engine = os.environ.get("MARK_DAWN_OCR_ENGINE", "rapidocr").strip().lower()
-    if engine == "tesseract" or not HAS_RAPIDOCR:
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-            tmp_pdf = Path(f.name)
-        try:
-            img.save(str(tmp_pdf), "PDF", resolution=300)
-            _ocr_pdf_tesseract(tmp_pdf, out_md)
-        finally:
-            tmp_pdf.unlink(missing_ok=True)
-        return
 
     _ocr_with_rapidocr([img], out_md)
 

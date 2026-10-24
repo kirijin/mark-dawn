@@ -124,39 +124,6 @@ def fitz_mocks():
 
 
 # ---------------------------------------------------------------------------
-#  _ocr_pdf
-# ---------------------------------------------------------------------------
-
-class TestOcrPdf:
-    """Most-used path: ocrmypdf + pymupdf4llm."""
-
-    def test_calls_ocrmypdf_and_pymupdf4llm(self):
-        pdf = Path("/tmp/dummy.pdf")
-        out = Path("/tmp/out.md")
-        pdf.touch()
-        out.parent.mkdir(parents=True, exist_ok=True)
-
-        with (
-            mock.patch.object(convert_pdf, "subprocess") as sp,
-            mock.patch.object(convert_pdf.pymupdf4llm, "to_markdown",
-                              return_value="# Hello") as to_md,
-        ):
-            sp.run.return_value = mock.MagicMock(returncode=0)
-            convert_pdf._ocr_pdf_tesseract(pdf, out)
-
-            # ocrmypdf called with --skip-text (path may be resolved via which)
-            ocr_args = sp.run.call_args.args[0]
-            assert "--skip-text" in ocr_args
-            assert os.path.basename(ocr_args[0]) == "ocrmypdf"
-            # pymupdf4llm called on the ocr output
-            assert to_md.called
-            # output written
-            assert out.read_text() == "# Hello\n"
-
-            out.unlink(missing_ok=True)
-
-
-# ---------------------------------------------------------------------------
 #  _pdf_text_ratio
 # ---------------------------------------------------------------------------
 
