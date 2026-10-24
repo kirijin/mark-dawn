@@ -18,7 +18,7 @@
 | Linux | ✅ stable | `curl ... install.sh \| bash` | Podman/Docker container |
 | macOS 26+ | ✅ new | `curl ... install-macos-container.sh \| bash` | Apple Container (native, ~51 MB idle) |
 | macOS pre-26 | ✅ new | `curl ... install.sh \| bash` | Homebrew + Python venv (no VM) |
-| Windows | ⚠️ works (portable; recent fixes unverified on hardware) | PowerShell | MSYS2 portable (no admin) |
+| Windows | ✅ verified (converter + 56 tests pass on Win 11 VM) | PowerShell | MSYS2 portable (no admin) |
 
 ---
 
@@ -321,8 +321,8 @@ python3 watcher.py                      # starts the watcher
 | **Idle RAM** | ~0 (cold) | ~51 MB | ~50 MB | ~80 MB |
 | **Image/stack** | Docker Hub | Docker Hub | brew + pip | embedded |
 | **Root/sudo** | no | no | no | no |
-| **OCR languages** | 6 (extensible) | 6 | 6 | 25 (full tessdata) |
-| **Maturity** | ✅ stable | 🆕 fresh | 🆕 fresh | ⚠️ works (recent fixes unverified) |
+| **OCR languages** | 6 (extensible) | 6 | 6 | 6 (RapidOCR lang types) |
+| **Maturity** | ✅ stable | 🆕 fresh | 🆕 fresh | ✅ verified (Win 11 VM) |
 
 ---
 
