@@ -1,4 +1,4 @@
-function Step-Init {
+﻿function Step-Init {
     Write-Step "0/13" "Resolving paths and creating directories..."
 
     if (-not $Script:_installDir) { $Script:_installDir = $Script:DEFAULT_INSTALL_DIR }

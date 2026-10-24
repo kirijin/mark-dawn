@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
+﻿# SPDX-FileCopyrightText: 2026 kirijin <avel.ronin@gmail.com>
 # SPDX-License-Identifier: MIT
 
 # Compatibility entry point. The orchestrator lives in mark-dawn.ps1 and its

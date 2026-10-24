@@ -1,4 +1,4 @@
-function Get-LauncherScript {
+﻿function Get-LauncherScript {
     return @"
 @echo off
 setlocal enabledelayedexpansion

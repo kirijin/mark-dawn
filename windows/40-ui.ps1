@@ -1,4 +1,4 @@
-function Show-Help {
+﻿function Show-Help {
     Write-Host "mark-dawn portable installer for Windows (Option B)" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Usage: mark-dawn.ps1 [options]" -ForegroundColor White

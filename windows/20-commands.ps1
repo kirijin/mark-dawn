@@ -1,4 +1,4 @@
-function Invoke-Install {
+﻿function Invoke-Install {
     Write-Host ""
     Write-Host "=== mark-dawn installer v$($Script:_installVersion) ===" -ForegroundColor Cyan
     Write-Host "Universal Document -> Markdown Pipeline for Windows" -ForegroundColor Cyan

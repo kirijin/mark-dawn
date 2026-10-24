@@ -1,4 +1,4 @@
-function Write-Log {
+﻿function Write-Log {
     [CmdletBinding()]
     param(
         [Parameter(Position = 0, Mandatory = $true)]
