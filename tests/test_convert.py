@@ -167,7 +167,7 @@ class TestHandlePdf:
             out.unlink(missing_ok=True)
 
     def test_scanned_path(self, fitz_mocks):
-        """avg <= 100 → render pages, call ocrmypdf."""
+        """avg <= 100 → render pages, call RapidOCR."""
         fitz_mocks["src_doc"].pages = [
             _MockPage(text=""),
             _MockPage(text=""),
@@ -185,7 +185,7 @@ class TestHandlePdf:
 
     def test_empty_pdf_exits(self, fitz_mocks):
         """An empty (zero-page) PDF is rejected with exit code 1 instead of
-        being fed to ocrmypdf."""
+        being fed to RapidOCR."""
         fitz_mocks["src_doc"].pages = []  # n = 0
         out = Path("/tmp/md-test-out/empty.md")
         with pytest.raises(SystemExit) as exc:
@@ -394,7 +394,7 @@ class TestMain:
 
     @mock.patch.object(convert_pdf, "_handle_pdf")
     def test_timeout_exits(self, h):
-        h.side_effect = subprocess.TimeoutExpired(cmd="ocrmypdf", timeout=10)
+        h.side_effect = subprocess.TimeoutExpired(cmd="convert", timeout=10)
         with (
             mock.patch.object(sys, "argv", ["convert_pdf.py", "/tmp/doc.pdf"]),
             pytest.raises(SystemExit) as exc,
