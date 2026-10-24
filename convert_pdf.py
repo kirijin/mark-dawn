@@ -19,6 +19,11 @@ Exit codes: 0 ok, 1 failure, 2 busy (another conversion holds the lock).
 import os, sys, shutil, subprocess, tempfile, time, hashlib, importlib, importlib.util
 from pathlib import Path
 
+# Embedded Python (Windows portable) controls sys.path via python312._pth,
+# which does not auto-add the script directory. Ensure sibling modules
+# (docx_styler) are importable regardless of the host's path setup.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 try:
     from rapidocr import RapidOCR
     from rapidocr.utils.typings import OCRVersion
