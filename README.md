@@ -74,6 +74,26 @@ Drop a file into `Inbox/` (or `Inbox/2docx/` for DOCX, `Inbox/2md/` for explicit
 
 Output lands in `Research/`. Original removed on success, moved to `Inbox_Failed/` on failure.
 
+### Pipeline
+
+```mermaid
+graph LR
+    A[Input file] --> B{Type?}
+    B -->|Digital PDF| C[pymupdf4llm]
+    B -->|Scanned PDF| D[fitz raster]
+    B -->|Image| D
+    B -->|Office doc| E[markitdown]
+    B -->|DjVu| F{djvutxt works?}
+    F -->|yes| G[native text]
+    F -->|no| D
+    D --> H["RapidOCR (ONNX)"]
+    H --> C
+    C --> I[.md file]
+    I --> J{--docx?}
+    J -->|yes| K[python-docx / pandoc]
+    K --> L[.docx file]
+```
+
 ### Plugins
 
 Add a handler without touching core: drop a module into `~/.config/mark-dawn/plugins/`, set `MARK_DAWN_PLUGINS=module.name`, or ship a pip package with a `mark_dawn.handlers` entry point. A handler needs `.extensions` (set of suffixes) and `.convert(file_path, out_md)`. See `examples/plugin_txt.py`.
