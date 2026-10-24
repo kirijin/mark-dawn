@@ -17,7 +17,7 @@ function Show-Help {
     Write-Host ""
     Write-Host "Other commands:" -ForegroundColor Yellow
     Write-Host "  -Uninstall           Remove the installation"
-    Write-Host "  -QuickReinstall      Reinstall keeping Python/MSYS2/tessdata/Research"
+    Write-Host "  -QuickReinstall      Reinstall keeping Python/MSYS2/Research"
     Write-Host "  -FullReinstall       Delete everything and reinstall from scratch"
     Write-Host "  -Help                Show this help"
     Write-Host ""
@@ -37,7 +37,7 @@ function Main {
         Write-Fail "Unknown argument '$($args[0])'. Run 'mark-dawn.ps1 -Help' for usage."
     }
 
-    if (-not $Uninstall -and -not $QuickReinstall -and -not $FullReinstall -and -not $ChangeLangs -and -not $InstallDir -and -not $DataDir -and -not $TessdataLangs -and -not $Msys2Mirror -and -not $PypiMirror) {
+    if (-not $Uninstall -and -not $QuickReinstall -and -not $FullReinstall -and -not $InstallDir -and -not $DataDir -and -not $Msys2Mirror -and -not $PypiMirror) {
         Write-Host ""
         Write-Host "=== mark-dawn ===" -ForegroundColor Cyan
         Write-Host "Universal Document -> Markdown Pipeline" -ForegroundColor Cyan
@@ -46,9 +46,8 @@ function Main {
         Write-Host "  2. Uninstall"
         Write-Host "  3. Quick reinstall (preserves deps)"
         Write-Host "  4. Full reinstall (from scratch)"
-        Write-Host "  5. Change language models"
-        Write-Host "  6. Help"
-        Write-Host "  7. Quit"
+        Write-Host "  5. Help"
+        Write-Host "  6. Quit"
         Write-Host ""
         $choice = Read-Host "Choose"
         Write-Host ""
@@ -61,11 +60,9 @@ function Main {
         } elseif ($choice -eq "4") {
             $FullReinstall = $true
         } elseif ($choice -eq "5") {
-            $ChangeLangs = $true
-        } elseif ($choice -eq "6") {
             Show-Help
             return
-        } elseif ($choice -eq "7") {
+        } elseif ($choice -eq "6") {
             exit
         }
     }
@@ -88,17 +85,6 @@ function Main {
         return
     }
 
-    if ($ChangeLangs) {
-        $Script:_installDir = if ($InstallDir) { $InstallDir } else { $Script:DEFAULT_INSTALL_DIR }
-        $Script:_dataDir    = if ($DataDir)    { $DataDir }    else { $Script:DEFAULT_DATA_DIR }
-        $Script:_tessdataDir = Join-PathSafe $Script:_installDir "tessdata"
-        $Script:_msys2Dir   = Join-PathSafe $Script:_installDir ".msys2"
-        $Script:_scriptsDir = Join-PathSafe $Script:_installDir "scripts"
-        $Script:_launcherPath = Join-PathSafe $Script:_installDir "mark-dawn.bat"
-        Invoke-ChangeLangs
-        return
-    }
-
     if ($Uninstall) {
         $Script:_installDir = if ($InstallDir) { $InstallDir } else { $Script:DEFAULT_INSTALL_DIR }
         $Script:_dataDir    = if ($DataDir)    { $DataDir }    else { $Script:DEFAULT_DATA_DIR }
@@ -117,7 +103,6 @@ function Main {
     $Script:_msys2Dir      = Join-PathSafe $Script:_installDir ".msys2"
     $Script:_scriptsDir    = Join-PathSafe $Script:_installDir "scripts"
     $Script:_logsDir       = Join-PathSafe $Script:_installDir "logs"
-    $Script:_tessdataDir   = Join-PathSafe $Script:_installDir "tessdata"
     $Script:_launcherPath  = Join-PathSafe $Script:_installDir "mark-dawn.bat"
     $Script:_pidFile       = Join-PathSafe $Script:_installDir "mark-dawn.pid"
     $Script:_logFile       = Join-PathSafe $Script:_logsDir "mark-dawn.log"

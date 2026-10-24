@@ -16,8 +16,6 @@ function Invoke-Install {
         @{ Name = "msys2_extracted";         Desc = "Extract MSYS2";                    Func = ${function:Step-ExtractMsys2} }
         @{ Name = "msys2_initialized";       Desc = "Initialize MSYS2 keyring";          Func = ${function:Step-InitMsys2} }
         @{ Name = "msys2_tools_installed";   Desc = "Install system tools (pacman)";    Func = ${function:Step-InstallMsys2Tools} }
-        @{ Name = "tessdata_langs_selected"; Desc = "Select language models";             Func = ${function:Step-SelectTessdataLangs} }
-        @{ Name = "tessdata_downloaded";     Desc = "Download language models";           Func = ${function:Step-DownloadTessdata} }
         @{ Name = "scripts_generated";       Desc = "Generate Python scripts";          Func = ${function:Step-GenerateScripts} }
         @{ Name = "launcher_generated";      Desc = "Generate launcher";                Func = ${function:Step-GenerateLauncher} }
         @{ Name = "verified";                Desc = "Verify installation";              Func = ${function:Step-Verify} }
@@ -162,26 +160,15 @@ function Invoke-Uninstall {
 }
 
 function Invoke-ChangeLangs {
-    if (-not $Script:_msys2Dir -or -not (Test-Path (Join-PathSafe $Script:_msys2Dir "usr\bin\bash.exe") -PathType Leaf)) {
-        Write-Fail "MSYS2 not found at '$Script:_msys2Dir'. Run the installer first."
-    }
-
-    Step-SelectTessdataLangs
-    Step-DownloadTessdata
-
-    # The launcher embeds the selected languages as MARK_DAWN_LANGS;
-    # regenerate it so the new selection applies on the next start.
-    if (Test-Path $Script:_launcherPath -PathType Leaf) {
-        Step-GenerateLauncher
-        $langs = $Script:selectedTessdataLangs -join '+'
-        Write-OK "Launcher updated with languages: $langs (restart the watcher)"
-    }
+    Write-Host "OCR languages are now handled by RapidOCR (pure Python)."
+    Write-Host "Set MARK_DAWN_LANGS in the launcher or use --langs per file."
+    Write-Host "Example: mark-dawn convert scan.pdf --langs eng+rus"
 }
 
 function Invoke-QuickReinstall {
     Write-Host ""
     Write-Host "=== mark-dawn quick reinstall ===" -ForegroundColor Cyan
-    Write-Host "Preserves: Python + pip packages, MSYS2, tessdata, pacman cache, Research"
+    Write-Host "Preserves: Python + pip packages, MSYS2, pacman cache, Research"
     Write-Host "Deletes: scripts, launcher, state, inbox, failed, logs"
     Write-Host ""
 
@@ -254,7 +241,7 @@ function Invoke-QuickReinstall {
     }
 
     # Preserved items
-    $preserved += "python/", ".msys2/", ".pacman-cache/", "tessdata/", "Research/"
+    $preserved += "python/", ".msys2/", ".pacman-cache/", "Research/"
 
     Write-Host ""
     Write-OK "Deleted: $($deleted -join ', ')"
@@ -279,7 +266,7 @@ function Invoke-QuickReinstall {
         Write-Log "Warn" "Could not update PATH: $_" -NoConsole
     }
 
-    # Preserve state for completed steps (tessdata, python, msys2, etc.)
+    # Preserve state for completed steps (python, msys2, etc.)
     # but clear scripts/launcher/verify steps so they regenerate
     $stateFile = Join-PathSafe $Script:_installDir ".install-state.json"
     if (Test-Path $stateFile -PathType Leaf) {

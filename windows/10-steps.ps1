@@ -1,5 +1,5 @@
 function Step-Init {
-    Write-Step "0/15" "Resolving paths and creating directories..."
+    Write-Step "0/13" "Resolving paths and creating directories..."
 
     if (-not $Script:_installDir) { $Script:_installDir = $Script:DEFAULT_INSTALL_DIR }
     if (-not $Script:_dataDir) { $Script:_dataDir = $Script:DEFAULT_DATA_DIR }
@@ -28,7 +28,6 @@ function Step-Init {
     $Script:_msys2Dir      = Join-PathSafe $Script:_installDir ".msys2"
     $Script:_scriptsDir    = Join-PathSafe $Script:_installDir "scripts"
     $Script:_logsDir       = Join-PathSafe $Script:_installDir "logs"
-    $Script:_tessdataDir   = Join-PathSafe $Script:_installDir "tessdata"
     $Script:_launcherPath  = Join-PathSafe $Script:_installDir "mark-dawn.bat"
     $Script:_pidFile       = Join-PathSafe $Script:_installDir "mark-dawn.pid"
     $Script:_logFile       = Join-PathSafe $Script:_logsDir "mark-dawn.log"
@@ -64,7 +63,7 @@ function Step-Init {
 }
 
 function Step-DownloadPython {
-    Write-Step "1/15" "Downloading Python $($Script:PYTHON_VERSION) embedded distribution (~11 MB)..."
+    Write-Step "1/13" "Downloading Python $($Script:PYTHON_VERSION) embedded distribution (~11 MB)..."
     $tempDir = Join-PathSafe $env:TEMP "mark-dawn-installer"
     Ensure-Directory $tempDir
     $pythonZip = Join-PathSafe $tempDir "python-embed.zip"
@@ -92,7 +91,7 @@ function Step-DownloadPython {
 }
 
 function Step-DownloadGetPip {
-    Write-Step "2/15" "Downloading get-pip.py..."
+    Write-Step "2/13" "Downloading get-pip.py..."
     $tempDir = Join-PathSafe $env:TEMP "mark-dawn-installer"
     Ensure-Directory $tempDir
     $getPipPath = Join-PathSafe $tempDir "get-pip.py"
@@ -123,7 +122,7 @@ function Step-DownloadGetPip {
 }
 
 function Step-ExtractPython {
-    Write-Step "3/15" "Extracting Python $($Script:PYTHON_VERSION) embedded..."
+    Write-Step "3/13" "Extracting Python $($Script:PYTHON_VERSION) embedded..."
 
     $pythonExeCheck = Join-PathSafe $Script:_pythonDir "python.exe"
     if (-not (Test-Path $pythonExeCheck -PathType Leaf) -or $Script:ForceRedownload) {
@@ -158,7 +157,7 @@ function Step-ExtractPython {
 }
 
 function Step-InstallPip {
-    Write-Step "4/15" "Installing pip into embedded Python..."
+    Write-Step "4/13" "Installing pip into embedded Python..."
 
     # Ensure python312._pth is valid (BOM-free + import site uncommented)
     try {
@@ -195,7 +194,7 @@ function Step-InstallPip {
 }
 
 function Step-InstallPythonPackages {
-    Write-Step "5/15" "Installing Python packages from pinned requirements.txt..."
+    Write-Step "5/13" "Installing Python packages from pinned requirements.txt..."
 
     try {
         # Download the pinned requirement set shared with the other platforms
@@ -247,7 +246,7 @@ sys.exit(0 if all_ok else 1)
 }
 
 function Step-DownloadMsys2 {
-    Write-Step "6/15" "Downloading MSYS2 base system SFX (~50 MB)..."
+    Write-Step "6/13" "Downloading MSYS2 base system SFX (~50 MB)..."
     $tempDir = Join-PathSafe $env:TEMP "mark-dawn-installer"
     Ensure-Directory $tempDir
     $installerPath = Join-PathSafe $tempDir "msys2-sfx.exe"
@@ -294,7 +293,7 @@ function Step-DownloadMsys2 {
 }
 
 function Step-ExtractMsys2 {
-    Write-Step "7/15" "Extracting MSYS2 base system..."
+    Write-Step "7/13" "Extracting MSYS2 base system..."
 
     $bashCheck = Join-PathSafe $Script:_msys2Dir "usr\bin\bash.exe"
 
@@ -357,7 +356,7 @@ function Step-ExtractMsys2 {
 }
 
 function Step-InitMsys2 {
-    Write-Step "8/15" "Initializing MSYS2 pacman keyring (2-3 minutes)..."
+    Write-Step "8/13" "Initializing MSYS2 pacman keyring (2-3 minutes)..."
 
     if ($Script:SkipInit) {
         Write-Info "Skipping MSYS2 initialization (-SkipInit)"
@@ -428,7 +427,7 @@ function Step-InitMsys2 {
 }
 
 function Step-InstallMsys2Tools {
-    Write-Step "9/15" "Installing system tools via pacman (djvulibre)..."
+    Write-Step "9/13" "Installing system tools via pacman (djvulibre)..."
 
     try {
         $pkgs = $Script:MSYS2_TOOL_PACKAGES
@@ -500,194 +499,8 @@ pacman -S --noconfirm --needed --disable-download-timeout \
     }
 }
 
-function Step-SelectTessdataLangs {
-    Write-Step "10/15" "Selecting language models..."
-
-    if ($Script:NoOcr) {
-        $Script:selectedTessdataLangs = @()
-        Write-OK "OCR disabled, skipping language models"
-        Set-InstallState -Step "tessdata_langs_selected" -Status "ok"
-        return
-    }
-
-    $groups = $Script:TESSDATA_LANG_GROUPS
-    $sha = $Script:TESSDATA_SHA256
-
-    # Build flat code list
-    $allCodes = @()
-    foreach ($g in $groups) {
-        foreach ($item in $g.Items) {
-            $allCodes += $item.Code
-        }
-    }
-
-    # CLI arg override
-    if ($Script:TessdataLangs) {
-        $userLangs = $Script:TessdataLangs -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
-        $Script:selectedTessdataLangs = $userLangs | Where-Object { $_ -in $allCodes }
-        $invalid = $userLangs | Where-Object { $_ -notin $allCodes }
-        if ($invalid) { Write-Log "Warn" "Unknown language codes ignored: $($invalid -join ', ')" -NoConsole }
-        Write-OK "Selected $($Script:selectedTessdataLangs.Count) language(s): $($Script:selectedTessdataLangs -join ', ')"
-        Set-InstallState -Step "tessdata_langs_selected" -Status "ok"
-        return
-    }
-
-    # Detect system locale for smart default: eng + local language
-    $localeMap = @{
-        "ru" = "rus"; "de" = "deu"; "fr" = "fra"; "es" = "spa"; "it" = "ita"
-        "pt" = "por"; "nl" = "nld"; "pl" = "pol"; "sv" = "swe"; "cs" = "ces"
-        "da" = "dan"; "fi" = "fin"; "no" = "nor"; "ro" = "ron"; "uk" = "ukr"
-        "bg" = "bul"; "el" = "ell"; "ar" = "ara"; "he" = "heb"; "fa" = "fas"
-        "tr" = "tur"; "hi" = "hin"; "bn" = "ben"; "ta" = "tam"; "ur" = "urd"
-        "th" = "tha"; "zh" = "chi_sim"; "ja" = "jpn"; "ko" = "kor"
-        "vi" = "vie"; "id" = "ind"
-    }
-    $sysLang = [System.Globalization.CultureInfo]::CurrentCulture.TwoLetterISOLanguageName
-    $localCode = $localeMap[$sysLang]
-    if ($localCode -eq "eng") { $localCode = $null }
-    $defaultCodes = if ($localCode) { @("eng", $localCode) } else { @("eng") }
-    $defaultHint = $defaultCodes -join ','
-
-    # Show available languages grouped
-    Write-Host "Available language models:" -ForegroundColor Yellow
-    foreach ($g in $groups) {
-        Write-Host ""
-        Write-Host "  $($g.Name):" -ForegroundColor Cyan
-        foreach ($item in $g.Items) {
-            $dest = Join-PathSafe $Script:_tessdataDir "$($item.Code).traineddata"
-            $st = if ((Test-Path $dest -PathType Leaf) -and (Test-Sha256 -FilePath $dest -ExpectedHash $sha[$item.Code])) {
-                "installed"
-            } else { "missing" }
-            $stSymbol = if ($st -eq "installed") { "+" } else { "-" }
-            Write-Host "  $stSymbol [$($item.Code)] $($item.Name)"
-        }
-    }
-
-    Write-Host ""
-    Write-Host "Enter codes (comma-separated) or 'all' [default: $defaultHint]"
-    $input = $null
-    for ($i = 10; $i -gt 0 -and -not [Console]::KeyAvailable; $i--) {
-        Write-Host "`r  Auto-submit in ${i}s... " -NoNewline
-        Start-Sleep -Seconds 1
-    }
-    if ([Console]::KeyAvailable) {
-        Write-Host ""
-        $input = Read-Host "  Enter codes"
-    } else {
-        Write-Host "`r  Timeout. Using default: $defaultHint"
-        $input = ''
-    }
-    if ($input -eq 'all') {
-        $Script:selectedTessdataLangs = @($allCodes)
-    } elseif ($input -eq '') {
-        $Script:selectedTessdataLangs = @($defaultCodes)
-    } else {
-        $userLangs = $input -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
-        $Script:selectedTessdataLangs = $userLangs | Where-Object { $_ -in $allCodes }
-        $invalid = $userLangs | Where-Object { $_ -notin $allCodes }
-        if ($invalid) { Write-Log "Warn" "Unknown codes ignored: $($invalid -join ', ')" -NoConsole }
-    }
-
-    if (-not $Script:selectedTessdataLangs) {
-        Write-Info "No languages selected, skipping model download"
-    } else {
-        Write-OK "Selected $($Script:selectedTessdataLangs.Count) language(s): $($Script:selectedTessdataLangs -join ', ')"
-    }
-    Set-InstallState -Step "tessdata_langs_selected" -Status "ok"
-}
-
-function Step-DownloadTessdata {
-    Write-Step "11/15" "Downloading language models..."
-
-    if ($Script:NoOcr -or -not $Script:selectedTessdataLangs) {
-        Write-OK "Language models not needed, skipping"
-        Set-InstallState -Step "tessdata_downloaded" -Status "ok"
-        return
-    }
-
-    Ensure-Directory $Script:_tessdataDir
-
-    # Remove language models that are no longer selected
-    Get-ChildItem "$Script:_tessdataDir\*.traineddata" | ForEach-Object {
-        $lang = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
-        if ($lang -notin $Script:selectedTessdataLangs) {
-            Write-Info "Removing unselected language model: $lang"
-            Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
-        }
-    }
-
-    $failed = @()
-    $succeeded = @()
-    $allLangs = $Script:selectedTessdataLangs
-    $minSize = $Script:TESSDATA_MIN_SIZE
-
-    # Determine which languages need downloading (skip cached + valid)
-    $pending = @()
-    foreach ($lang in $allLangs) {
-        $dest = Join-PathSafe $Script:_tessdataDir "$lang.traineddata"
-        $expectedHash = $Script:TESSDATA_SHA256[$lang]
-        if ((Test-Path $dest -PathType Leaf) -and -not $Script:ForceRedownload) {
-            if ($Script:SkipVerification -or (Test-Sha256 -FilePath $dest -ExpectedHash $expectedHash)) {
-                $succeeded += $lang
-                Write-Log "Debug" "Language model '$lang' already valid, skipping" -NoConsole
-                continue
-            } else {
-                Write-Log "Warn" "Language model '$lang' hash mismatch, re-downloading" -NoConsole
-            }
-        }
-        $tessdataLangUrl = "$($Script:TESSDATA_BASE_URL)/$lang.traineddata"
-        $tessdataMirrorUrl = "$($Script:TESSDATA_MIRROR_URL)/$lang.traineddata"
-        $pending += @{ Lang = $lang; Dest = $dest; Url = $tessdataMirrorUrl; FallbackUrl = $tessdataLangUrl; Hash = $expectedHash }
-    }
-
-    if ($pending.Count -eq 0) {
-        Write-OK "Language models ready: $($succeeded -join ', ')"
-        Write-Log "Debug" "No tessdata downloads needed" -NoConsole
-    } else {
-        Write-Info "Downloading $($pending.Count) language models..."
-        foreach ($p in $pending) {
-            $downloaded = $false
-            foreach ($url in @($p.Url, $p.FallbackUrl)) {
-                for ($attempt = 1; $attempt -le $Script:MaxRetries; $attempt++) {
-                    try {
-                        Invoke-WebRequest -Uri $url -OutFile $p.Dest -UseBasicParsing -ErrorAction Stop -TimeoutSec $Script:TimeoutSec
-                        $info = Get-Item $p.Dest -ErrorAction Stop
-                        if ($info.Length -ge $Script:TESSDATA_MIN_SIZE) {
-                            if (-not $Script:SkipVerification -and $p.Hash) {
-                                $actualHash = (Get-FileHash $p.Dest -Algorithm SHA256).Hash.ToLower()
-                                if ($actualHash -ne $p.Hash) { throw "SHA256 hash mismatch" }
-                            }
-                            $succeeded += $p.Lang
-                            $downloaded = $true
-                            break
-                        }
-                    } catch {
-                        Remove-Item $p.Dest -Force -ErrorAction SilentlyContinue
-                        if ($attempt -lt $Script:MaxRetries) {
-                            Start-Sleep -Seconds ([Math]::Min(3 * $attempt, 30))
-                        }
-                    }
-                }
-                if ($downloaded) { break }
-            }
-            if (-not $downloaded) { $failed += $p.Lang }
-        }
-    }
-
-    if ($succeeded.Count -gt 0) {
-        Write-OK "Language models ready: $($succeeded -join ', ')"
-    }
-    if ($failed.Count -gt 0) {
-        Write-Host "WARNING: Failed to download: $($failed -join ', ')" -ForegroundColor Yellow
-        Write-Log "Warn" "Failed to download language models: $($failed -join ', ')"
-    }
-
-    # OCR is now pure-Python (RapidOCR); no tesseract config files needed.
-    Set-InstallState -Step "tessdata_downloaded" -Status "ok"
-}
-
 function Step-GenerateScripts {
-    Write-Step "12/15" "Deploying Python scripts (watcher, convert, docx_styler)..."
+    Write-Step "10/13" "Deploying Python scripts (watcher, convert, docx_styler)..."
 
     Ensure-Directory $Script:_scriptsDir
 
@@ -721,7 +534,7 @@ function Step-GenerateScripts {
 }
 
 function Step-GenerateLauncher {
-    Write-Step "13/15" "Generating mark-dawn.bat launcher..."
+    Write-Step "11/13" "Generating mark-dawn.bat launcher..."
 
     try {
         $launcherContent = Get-LauncherScript
@@ -740,7 +553,7 @@ function Step-GenerateLauncher {
 }
 
 function Step-Verify {
-    Write-Step "14/15" "Verifying installation..."
+    Write-Step "12/13" "Verifying installation..."
 
     $failures = @()
 
@@ -753,16 +566,6 @@ function Step-Verify {
     foreach ($check in $checks) {
         if (-not (Test-Path $check.Path -PathType Leaf)) {
             $failures += "Missing: $($check.Name) at $($check.Path)"
-        }
-    }
-
-    # Validate tessdata (skip if NoOcr or no langs selected)
-    if (-not $Script:NoOcr -and $Script:selectedTessdataLangs) {
-        foreach ($lang in $Script:selectedTessdataLangs) {
-            $path = Join-PathSafe $Script:_tessdataDir "$lang.traineddata"
-            if (-not (Test-Path $path -PathType Leaf)) {
-                $failures += "Missing language model: $lang"
-            }
         }
     }
 
@@ -808,7 +611,7 @@ import watchdog; print('watchdog ok')
 }
 
 function Step-Complete {
-    Write-Step "15/15" "Installation complete!"
+    Write-Step "13/13" "Installation complete!"
 
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Green

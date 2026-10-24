@@ -34,7 +34,6 @@ param(
     [switch]$ForceRedownload,
     [switch]$SkipVerification,
     [switch]$NoOcr,
-    [string]$TessdataLangs = "",
     [int]$MaxRetries = 3,
     [int]$TimeoutSec = 300,
     [ValidateSet("Debug", "Info", "Warn", "Error")]
@@ -94,79 +93,6 @@ $Script:MSYS2_MIRRORS = @(
     @{ Name = "FAU";       Base = "https://ftp.fau.de/msys2" }
 )
 
-# Tesseract language models (25 languages, grouped by region)
-$Script:TESSDATA_BASE_URL  = "https://github.com/tesseract-ocr/tessdata/raw/main"
-$Script:TESSDATA_MIRROR_URL = "https://cdn.jsdelivr.net/gh/tesseract-ocr/tessdata@main"
-$Script:TESSDATA_LANGS    = @(
-    "eng", "fra", "deu", "spa", "ita", "por", "nld",
-    "rus", "pol", "swe", "ces", "dan", "fin", "nor", "ron", "ukr", "bul", "ell",
-    "ara", "heb", "fas", "tur", "hin", "ben", "tam", "urd", "tha",
-    "chi_sim", "chi_tra", "jpn", "kor", "vie", "ind"
-)
-$Script:TESSDATA_SHA256   = @{
-    "eng"     = "daa0c97d651c19fba3b25e81317cd697e9908c8208090c94c3905381c23fc047"
-    "fra"     = "eac01c1d72540d6090facb7b2f42dd0a2ee8fc57c5be1b20548ae668e2761913"
-    "deu"     = "896b3b4956503ab9daa10285db330881b2d74b70d889b79262cc534b9ec699a4"
-    "rus"     = "681be2c2bead1bc7bd235df88c44e8e60ae73ae866840c0ad4e3b4c247bd37c2"
-    "jpn"     = "6f416b902d129d8cc28e99c33244034b1cf52549e8560f6320b06d317852159a"
-    "chi_sim" = "fc05d89ab31d8b4e226910f16a8bcbf78e43bae3e2580bb5feefd052efdab363"
-}
-$Script:TESSDATA_LANG_GROUPS = @(
-    @{
-        Name = "West European"
-        Items = @(
-            @{ Flag = "🇬🇧"; Name = "English";             Code = "eng" }
-            @{ Flag = "🇫🇷"; Name = "French";              Code = "fra" }
-            @{ Flag = "🇩🇪"; Name = "German";              Code = "deu" }
-            @{ Flag = "🇪🇸"; Name = "Spanish";             Code = "spa" }
-            @{ Flag = "🇮🇹"; Name = "Italian";             Code = "ita" }
-            @{ Flag = "🇵🇹"; Name = "Portuguese";          Code = "por" }
-            @{ Flag = "🇳🇱"; Name = "Dutch";               Code = "nld" }
-        )
-    }
-    @{
-        Name = "North & East European"
-        Items = @(
-            @{ Flag = "🇷🇺"; Name = "Russian";             Code = "rus" }
-            @{ Flag = "🇵🇱"; Name = "Polish";              Code = "pol" }
-            @{ Flag = "🇸🇪"; Name = "Swedish";             Code = "swe" }
-            @{ Flag = "🇨🇿"; Name = "Czech";               Code = "ces" }
-            @{ Flag = "🇩🇰"; Name = "Danish";              Code = "dan" }
-            @{ Flag = "🇫🇮"; Name = "Finnish";             Code = "fin" }
-            @{ Flag = "🇳🇴"; Name = "Norwegian";           Code = "nor" }
-            @{ Flag = "🇷🇴"; Name = "Romanian";            Code = "ron" }
-            @{ Flag = "🇺🇦"; Name = "Ukrainian";           Code = "ukr" }
-            @{ Flag = "🇧🇬"; Name = "Bulgarian";           Code = "bul" }
-            @{ Flag = "🇬🇷"; Name = "Greek";               Code = "ell" }
-        )
-    }
-    @{
-        Name = "Middle East & South Asia"
-        Items = @(
-            @{ Flag = "🇸🇦"; Name = "Arabic";              Code = "ara" }
-            @{ Flag = "🇮🇱"; Name = "Hebrew";              Code = "heb" }
-            @{ Flag = "🇮🇷"; Name = "Persian";             Code = "fas" }
-            @{ Flag = "🇹🇷"; Name = "Turkish";             Code = "tur" }
-            @{ Flag = "🇮🇳"; Name = "Hindi";               Code = "hin" }
-            @{ Flag = "🇧🇩"; Name = "Bengali";             Code = "ben" }
-            @{ Flag = "🇮🇳"; Name = "Tamil";               Code = "tam" }
-            @{ Flag = "🇵🇰"; Name = "Urdu";                Code = "urd" }
-            @{ Flag = "🇹🇭"; Name = "Thai";                Code = "tha" }
-        )
-    }
-    @{
-        Name = "East Asia & SE Asia"
-        Items = @(
-            @{ Flag = "🇨🇳"; Name = "Chinese Simplified";   Code = "chi_sim" }
-            @{ Flag = "🇹🇼"; Name = "Chinese Traditional";  Code = "chi_tra" }
-            @{ Flag = "🇯🇵"; Name = "Japanese";            Code = "jpn" }
-            @{ Flag = "🇰🇷"; Name = "Korean";              Code = "kor" }
-            @{ Flag = "🇻🇳"; Name = "Vietnamese";          Code = "vie" }
-            @{ Flag = "🇮🇩"; Name = "Indonesian";          Code = "ind" }
-        )
-    }
-)
-$Script:TESSDATA_MIN_SIZE = 1MB
 
 # Python packages are installed from the pinned requirements.txt shared with
 # the container build and the brew installer — every platform runs the same
@@ -187,9 +113,7 @@ $Script:_pythonDir      = ""
 $Script:_msys2Dir       = ""
 $Script:_scriptsDir     = ""
 $Script:_logsDir        = ""
-$Script:_tessdataDir    = ""
 $Script:_launcherPath   = ""
-$Script:selectedTessdataLangs = @()
 $Script:_pidFile        = ""
 $Script:_logFile        = ""
 $Script:_installLog     = ""
