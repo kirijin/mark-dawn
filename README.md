@@ -110,6 +110,10 @@ Environment variables (also `mark-dawn config set --data-dir ~/Docs --langs eng+
 | `MARK_DAWN_FAILED_DIR` | `$DATA_DIR/Inbox_Failed` | failed conversions |
 | `MARK_DAWN_MAX_PAGES` | `50` | max PDF pages |
 | `MARK_DAWN_MAX_DIM` | `2400` | max image dimension (px) |
+| `MARK_DAWN_DESKEW` | `1` | deskew tilted pages before OCR (0 = off) |
+| `MARK_DAWN_RTL` | `1` | flip RTL text to logical order (0 = off) |
+| `MARK_DAWN_XY_CUT` | `1` | reorder OCR lines for multi-column (0 = off) |
+| `MARK_DAWN_SCRIPT_FIX` | `1` | auto-detect script per line (0 = off) |
 | `MARK_DAWN_MAX_INPUT_MB` | `200` | input size cap |
 | `MARK_DAWN_WORKERS` | `1` | watcher threads |
 | `MARK_DAWN_STATUS_PORT` | `0` | HTTP status endpoint (0 = off) |

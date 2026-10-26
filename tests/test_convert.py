@@ -418,6 +418,87 @@ class TestMain:
         finally:
             lock.unlink(missing_ok=True)
 
+class TestDeskewAndRtl:
+    """Deskew (Indra-style) and RTL flip (Indra-style) helpers."""
+
+    def test_estimate_skew_blank(self):
+        import numpy as np
+        from PIL import Image
+        img = Image.new("L", (200, 100), 255)
+        arr = np.array(img)
+        assert convert_pdf._estimate_skew(arr) == 0.0
+
+    def test_deskew_noop_small_angle(self):
+        from PIL import Image
+        img = Image.new("RGB", (200, 100), (255, 255, 255))
+        out, angle = convert_pdf._deskew_pil(img)
+        assert angle == 0.0
+        assert out is img
+
+    def test_deskew_detects_tilt(self):
+        import numpy as np
+        from PIL import Image
+        import cv2
+        img = Image.new("RGB", (400, 200), (255, 255, 255))
+        arr = np.array(img)
+        # draw horizontal lines then rotate 10 degrees
+        for y in range(30, 170, 20):
+            arr[y, 40:360] = [0, 0, 0]
+        M = cv2.getRotationMatrix2D((200, 100), 10, 1.0)
+        rotated = cv2.warpAffine(arr, M, (400, 200),
+                                borderMode=cv2.BORDER_REPLICATE)
+        tilted = Image.fromarray(rotated)
+        _, angle = convert_pdf._deskew_pil(tilted)
+        assert abs(angle) > 5.0
+
+    def test_flip_rtl_self_inverse(self):
+        text = "Hello مرحبا World 123"
+        f1 = convert_pdf._flip_rtl(text)
+        f2 = convert_pdf._flip_rtl(f1)
+        assert f2 == text
+
+    def test_flip_rtl_ltr_unchanged(self):
+        text = "Hello World 123"
+        assert convert_pdf._flip_rtl(text) == text
+
+    def test_flip_rtl_has_rtl(self):
+        assert convert_pdf._has_rtl("مرحبا") is True
+        assert convert_pdf._has_rtl("Hello") is False
+
+    def test_rtl_base(self):
+        assert convert_pdf._rtl_base("مرحبا") is True
+        assert convert_pdf._rtl_base("Hello") is False
+
+    def test_xy_cut_two_columns(self):
+        import numpy as np
+        boxes = np.array([
+            [50, 50, 100, 65],
+            [250, 50, 320, 65],
+            [50, 80, 110, 95],
+            [250, 80, 310, 95],
+        ], dtype=float)
+        order = convert_pdf._xy_cut_order(boxes)
+        assert order == [0, 2, 1, 3]
+
+    def test_xy_cut_single(self):
+        import numpy as np
+        boxes = np.array([[10, 10, 50, 30]], dtype=float)
+        assert convert_pdf._xy_cut_order(boxes) == [0]
+
+    def test_detect_script_cjk(self):
+        assert convert_pdf._detect_script("这是中文") == "cjk"
+
+    def test_detect_script_rtl(self):
+        assert convert_pdf._detect_script("مرحبا") == "rtl"
+
+    def test_detect_script_latin(self):
+        assert convert_pdf._detect_script("Hello World") == "latin"
+
+    def test_format_by_script_cjk(self):
+        assert convert_pdf._format_by_script("你 好 世 界", "cjk") == "你好世界"
+
+
+class TestUniqueOutputName:
     def test_unique_output_name(self):
         """Collision-safe naming: report.md → report (1).md when taken."""
         existing = convert_pdf.OUT_DIR / "uniq.md"

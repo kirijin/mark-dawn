@@ -12,6 +12,10 @@ same env schema everywhere:
   MARK_DAWN_LANGS        OCR language pack      (default eng+rus+fra+deu+chi_sim+jpn)
   MARK_DAWN_MAX_PAGES    scanned-render page cap (default 50)
   MARK_DAWN_MAX_DIM      max rendered dimension px (default 2400)
+  MARK_DAWN_DESKEW       deskew tilted pages before OCR (default 1)
+  MARK_DAWN_RTL          flip RTL text to logical order (default 1)
+  MARK_DAWN_XY_CUT       reorder OCR lines for multi-column layouts (default 1)
+  MARK_DAWN_SCRIPT_FIX    auto-detect script per line for formatting (default 1)
 
 Usage: convert_pdf.py FILE [--docx]
 Exit codes: 0 ok, 1 failure, 2 busy (another conversion holds the lock).
@@ -37,6 +41,21 @@ import pymupdf4llm
 from PIL import Image as PImage
 import docx_styler
 
+# Optional: OpenCV + numpy for deskew (available via RapidOCR's deps).
+try:
+    import cv2
+    HAS_CV2 = True
+except ImportError:
+    cv2 = None
+    HAS_CV2 = False
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    np = None
+    HAS_NUMPY = False
+import unicodedata
+
 _HOME = Path.home()
 OUT_DIR = Path(os.environ.get("MARK_DAWN_OUT_DIR",    str(_HOME / "Documents" / "Research")))
 FAILED  = Path(os.environ.get("MARK_DAWN_FAILED_DIR",  str(_HOME / "Documents" / "Inbox_Failed")))
@@ -45,6 +64,10 @@ FAILED.mkdir(parents=True, exist_ok=True)
 
 OCRLANGS   = os.environ.get("MARK_DAWN_LANGS", "eng+rus+fra+deu+chi_sim+jpn")
 MAX_PAGES  = int(os.environ.get("MARK_DAWN_MAX_PAGES", "50"))
+DESKEW     = os.environ.get("MARK_DAWN_DESKEW", "1") == "1"
+RTL_FIX    = os.environ.get("MARK_DAWN_RTL", "1") == "1"
+XY_CUT     = os.environ.get("MARK_DAWN_XY_CUT", "1") == "1"
+SCRIPT_FIX = os.environ.get("MARK_DAWN_SCRIPT_FIX", "1") == "1"
 MAX_DIM    = int(os.environ.get("MARK_DAWN_MAX_DIM",   "2400"))
 LOCK_STALE_AFTER = 30 * 60  # seconds; steal locks older than this
 
@@ -287,6 +310,253 @@ def _pdf_text_ratio(path):
 
 
 # ---------------------------------------------------------------------------
+# Deskew (ported from datalab-to/indra estimate_skew; pure OpenCV, no model)
+# ---------------------------------------------------------------------------
+# Straightens a page tilted by up to 45 degrees before OCR.  Indra's
+# estimate_skew: search the angle whose horizontal ink profile changes most
+# sharply row to row.  Pure OpenCV, no model, ~8 ms/page on a thumbnail.
+_DESKEW_MAX = 45.0
+_DESKEW_MIN = 0.3
+
+
+def _ink_thumb(gray, side):
+    h, w = gray.shape
+    s = side / max(h, w)
+    small = cv2.resize(gray, (max(1, round(w * s)), max(1, round(h * s))),
+                       interpolation=cv2.INTER_AREA)
+    return 255 - small
+
+
+def _row_sharpness(ink, a):
+    size = (ink.shape[1], ink.shape[0])
+    M = cv2.getRotationMatrix2D((size[0] / 2, size[1] / 2), a, 1.0)
+    r = cv2.warpAffine(ink, M, size)
+    p = r.sum(1, dtype=np.int64).astype(np.float64)
+    return float(((p[1:] - p[:-1]) ** 2).sum())
+
+
+def _estimate_skew(gray):
+    """Degrees (counter-clockwise) that straighten the text rows. 0.0 if blank."""
+    if not HAS_CV2 or not HAS_NUMPY:
+        return 0.0
+    fine = _ink_thumb(gray, 800)
+    if fine.mean() < 0.003 * 255:
+        return 0.0
+    coarse = _ink_thumb(gray, 400)
+    grid = np.arange(-_DESKEW_MAX, _DESKEW_MAX + 1e-6, 2.0)
+    scores = list(map(lambda a: _row_sharpness(coarse, a), grid))
+    starts = {0.0, *(float(grid[i]) for i in np.argsort(scores)[-2:])}
+    near = [a for a0 in starts for a in np.arange(a0 - 2.0, a0 + 2.0 + 1e-6, 0.5)]
+    seen = dict.fromkeys(near)
+    seen.update(zip(seen, map(lambda a: _row_sharpness(fine, a), list(seen))))
+    a1 = max(near, key=seen.__getitem__)
+    last = np.arange(a1 - 0.5, a1 + 0.5 + 1e-6, 0.1)
+    vals = list(map(lambda a: _row_sharpness(fine, a), last))
+    return float(max(zip(last, vals), key=lambda av: av[1])[0])
+
+
+def _deskew_pil(img):
+    """Deskew a PIL image; return (deskewed_image, angle).  No-op if < 0.3 deg
+    or if OpenCV/numpy are unavailable."""
+    if not HAS_CV2 or not HAS_NUMPY:
+        return img, 0.0
+    arr = np.array(img)
+    if arr.ndim == 3:
+        gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+    else:
+        gray = arr
+        arr = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+    angle = _estimate_skew(gray)
+    if abs(angle) < _DESKEW_MIN:
+        return img, 0.0
+    h, w = gray.shape
+    M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
+    rotated = cv2.warpAffine(arr, M, (w, h), flags=cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_REPLICATE)
+    return PImage.fromarray(rotated), angle
+
+
+# ---------------------------------------------------------------------------
+# RTL text flip (ported from datalab-to/indra rtl.py; pure Python, no model)
+# ---------------------------------------------------------------------------
+# RapidOCR emits RTL text in visual order (left-to-right).  This flips it to
+# logical order using a small subset of the Unicode bidi algorithm (UAX #9).
+
+_MIRROR = dict(zip("()[]{}<>«»‹›", ")(][}{><»«›‹"))
+_PRESENTATION = ((0xFB1D, 0xFDFF), (0xFE70, 0xFEFF))
+_TATWEEL = "ـ"
+
+
+def _is_rtl(c):
+    return unicodedata.bidirectional(c) in ("R", "AL")
+
+
+def _is_ltr(c):
+    return unicodedata.bidirectional(c) in ("L", "EN", "AN")
+
+
+def _has_rtl(text):
+    return any(_is_rtl(c) for c in text)
+
+
+def _rtl_base(text):
+    r = sum(_is_rtl(c) for c in text)
+    lt = sum(unicodedata.bidirectional(c) == "L" for c in text)
+    return r > lt
+
+
+def _clusters(text):
+    out = []
+    for c in text:
+        if out and unicodedata.category(c) in ("Mn", "Me"):
+            out[-1] += c
+        else:
+            out.append(c)
+    return out
+
+
+def _kind(cl):
+    c = cl[0]
+    return "R" if _is_rtl(c) else "L" if _is_ltr(c) else "N"
+
+
+def _runs(kinds, strong, stop):
+    spans, start, last = [], None, None
+    for i, k in enumerate(kinds + ["#"]):
+        if k == strong:
+            if start is None:
+                start = i
+            last = i
+        elif k in stop or k == "#":
+            if start is not None:
+                spans.append((start, last + 1))
+            start = last = None
+    return spans
+
+
+def _flip_rtl(text):
+    """Flip RTL text from visual order to logical order (self-inverse)."""
+    if not _has_rtl(text):
+        return text
+    cls = _clusters(text)
+    kinds = [_kind(c) for c in cls]
+    if _rtl_base(text):
+        units = []
+        spans = _runs(kinds, "L", {"R"})
+        i = 0
+        for a, b in spans + [(len(cls), len(cls))]:
+            for j in range(i, a):
+                cl = cls[j]
+                units.append(_MIRROR.get(cl[0], cl[0]) + cl[1:])
+            if a < b:
+                units.append("".join(cls[a:b]))
+            i = b
+        return "".join(reversed(units))
+    out = list(cls)
+    for a, b in _runs(kinds, "R", {"L"}):
+        seg = cls[a:b][::-1]
+        out[a:b] = [_MIRROR.get(c[0], c[0]) + c[1:] for c in seg]
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------------
+# XY-cut reading order (ported from datalab-to/indra order_xycut; pure numpy)
+# ---------------------------------------------------------------------------
+# Reorders OCR text lines for multi-column layouts.  RapidOCR returns lines in
+# detection order (col1-row1, col2-row1, col1-row2, ...); XY-cut produces
+# reading order (col1-row1, col1-row2, ..., col2-row1, col2-row2, ...).
+
+
+def _xy_cut_order(boxes):
+    """Recursive XY-cut: returns list of indices in reading order.
+
+    boxes: (N, 4) array of [x0, y0, x1, y1].  Splits at the widest
+    whitespace gap on either axis; horizontal cut puts upper part first,
+    vertical cut puts left part first.  Falls back to top-down when no gap.
+    """
+    if not HAS_NUMPY:
+        return list(range(len(boxes)))
+    import numpy as np
+    boxes = np.asarray(boxes, dtype=np.float64).reshape(-1, 4)
+    n = len(boxes)
+    if n <= 1:
+        return list(range(n))
+
+    def best_cut(b, axis):
+        lo = b[:, 1] if axis == 1 else b[:, 0]
+        hi = b[:, 3] if axis == 1 else b[:, 2]
+        o = np.argsort(lo)
+        end = hi[o[0]]
+        best_gap, best_k = 0.0, -1
+        for k in range(1, len(o)):
+            gap = lo[o[k]] - end
+            if gap > best_gap:
+                best_gap, best_k = gap, k
+            end = max(end, hi[o[k]])
+        return best_gap, best_k, o
+
+    def rec(ids):
+        if len(ids) <= 1:
+            return list(ids)
+        b = boxes[ids]
+        gy, ky, oy = best_cut(b, 1)
+        gx, kx, ox = best_cut(b, 0)
+        if ky < 0 and kx < 0:
+            # top-down fallback
+            cy = (b[:, 1] + b[:, 3]) / 2
+            h = np.median(b[:, 3] - b[:, 1])
+            return [ids[i] for i in sorted(range(len(ids)),
+                                           key=lambda i: (round(cy[i] / max(h * 0.5, 1e-3)), b[i, 0]))]
+        if gy >= gx:
+            k, o = ky, oy
+        else:
+            k, o = kx, ox
+        return rec([ids[i] for i in o[:k]]) + rec([ids[i] for i in o[k:]])
+
+    return rec(list(range(n)))
+
+
+# ---------------------------------------------------------------------------
+# Script detection (pure Python, Unicode ranges; no model)
+# ---------------------------------------------------------------------------
+# Detects the dominant script of a text line using Unicode code-point ranges.
+# Used to apply script-specific formatting (CJK no spaces, RTL flip already
+# handled separately).
+
+
+def _detect_script(text):
+    """Return dominant script name: 'cjk', 'rtl', 'latin', or 'other'."""
+    if not text or not text.strip():
+        return "latin"
+    counts = {"cjk": 0, "rtl": 0, "latin": 0, "other": 0}
+    for c in text:
+        cp = ord(c)
+        if not c.isalpha():
+            continue
+        if _is_rtl(c):
+            counts["rtl"] += 1
+        elif (0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF
+              or 0x3040 <= cp <= 0x309F or 0x30A0 <= cp <= 0x30FF
+              or 0xAC00 <= cp <= 0xD7AF):
+            counts["cjk"] += 1
+        elif c.isascii() and c.isalpha():
+            counts["latin"] += 1
+        else:
+            counts["other"] += 1
+    return max(counts, key=counts.get)
+
+
+def _format_by_script(text, script):
+    """Apply script-specific formatting to an OCR text line."""
+    if script == "cjk":
+        # CJK: remove spaces between CJK characters (Indra-style)
+        import re
+        # Join CJK chars without space, keep spaces around Latin
+        return re.sub(r"(?<=[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af])\s+(?=[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af])", "", text)
+    return text
+
+
+# ---------------------------------------------------------------------------
 # RapidOCR engine (lightweight, cross-platform, no Tesseract)
 # ---------------------------------------------------------------------------
 
@@ -335,10 +605,37 @@ def _rapidocr_text(images):
     parts = []
     for i, img in enumerate(images):
         try:
+            # Deskew tilted pages before OCR (Indra-style, pure OpenCV).
+            if DESKEW and HAS_CV2:
+                img, angle = _deskew_pil(img)
+                if angle and abs(angle) >= _DESKEW_MIN:
+                    print("Deskewed page %d by %.1f deg" % (i + 1, angle),
+                          file=sys.stderr)
             out = engine(img)
             txts = getattr(out, "txts", None) or []
+            boxes = getattr(out, "boxes", None)
             if txts:
-                text = "\n".join(t for t in txts if t and t.strip())
+                # XY-cut: reorder lines for multi-column layouts.  Compute the
+                # order on the FULL parallel arrays (txts/boxes) so empty text
+                # entries don't desync indices, then drop empties afterwards.
+                if XY_CUT and HAS_NUMPY and boxes is not None and len(boxes) == len(txts):
+                    bboxes = []
+                    for b in boxes:
+                        pts = np.array(b, dtype=float).reshape(-1, 2)
+                        bboxes.append([pts[:, 0].min(), pts[:, 1].min(),
+                                       pts[:, 0].max(), pts[:, 1].max()])
+                    order = _xy_cut_order(bboxes)
+                    ordered = [txts[i] for i in order]
+                else:
+                    ordered = list(txts)
+                lines = [t for t in ordered if t and t.strip()]
+                # RTL flip.
+                if RTL_FIX:
+                    lines = [_flip_rtl(t) for t in lines]
+                # Script-aware formatting (CJK space removal, etc.).
+                if SCRIPT_FIX:
+                    lines = [_format_by_script(t, _detect_script(t)) for t in lines]
+                text = "\n".join(lines)
             else:
                 md = getattr(out, "to_markdown", None)
                 text = str(md()) if callable(md) else ""
@@ -347,6 +644,8 @@ def _rapidocr_text(images):
                 # yield empty output rather than a localized message.
                 if text and ("没有检测到" in str(text) or "未检测" in str(text)):
                     text = ""
+                if text and RTL_FIX:
+                    text = _flip_rtl(text)
             if text and text.strip():
                 parts.append("## Page %d\n\n%s" % (i + 1, text.strip()))
         except Exception as e:
