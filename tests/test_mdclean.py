@@ -256,6 +256,44 @@ def test_clean_is_idempotent(src):
     assert once == twice
 
 
+@pytest.mark.parametrize("src", ["", "\n", "   ", "\n\n\n"])
+def test_clean_is_idempotent_on_empty(src):
+    """Regression: an unconditional trailing newline made empty input grow."""
+    once = mdclean.clean(src)
+    assert once == ""
+    assert mdclean.clean(once) == ""
+
+
+def test_clean_preserves_frontmatter_on_second_pass():
+    """Regression: a second pass ate the YAML block and turned `---` into prose."""
+    once = mdclean.clean("# T\n\n" + "body text. " * 40,
+                         meta={"source": "x.pdf", "pages": 2})
+    twice = mdclean.clean(once)
+    assert twice == once
+    assert twice.startswith("---\n")
+    assert "source: x.pdf" in twice
+
+
+def test_bare_number_survives_single_page_document():
+    """Regression: folio stripping deleted content lines like `42`.
+
+    Page-number removal is only meaningful when the input has page structure;
+    on a one-page document a bare number is data.
+    """
+    src = "# Data\n\nProse intro that is long enough to be a document.\n\n42\n\nMore prose.\n"
+    out = mdclean.clean(src)
+    assert "42" in out
+
+
+def test_folio_still_stripped_from_page_aware_document():
+    """The fix above must not disable de-noise where it belongs."""
+    pages = "\n\n".join("<!-- page %d -->\n\nJournal of Testing\n\nBody %d.\n\n%d"
+                        % (i, i, i) for i in range(1, 7))
+    out = mdclean.clean(pages)
+    assert "Journal of Testing" not in out
+    assert "\n3\n" not in out
+
+
 # ---------------------------------------------------------------------------
 # gate
 # ---------------------------------------------------------------------------
@@ -330,3 +368,16 @@ def test_clean_output_passes_gate():
     cleaned = mdclean.clean(src, title="Test Book")
     errors = [(c, m) for s, c, m in mdclean.analyze(cleaned) if s == "E"]
     assert errors == [], "clean() output must not trip hard errors: %s" % errors
+
+def test_emphasis_only_heading_is_dropped():
+    """Regression: `## **` survived as a nameless heading with a bare `## `."""
+    out = mdclean.clean("# Title\n\nbody text here.\n\n## **\n\nmore body text.\n")
+    assert "## **" not in out
+    assert "# " in out  # the real H1 survives
+    lines = [ln for ln in out.splitlines() if ln.startswith("#")]
+    assert lines == ["# Title"], lines
+
+
+def test_emphasis_only_heading_text_is_empty():
+    assert mdclean._clean_heading_text("**") == ""
+    assert mdclean._clean_heading_text("___") == ""

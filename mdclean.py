@@ -348,16 +348,24 @@ def _synthesize_headings(lines, title):
 def _clean_heading_text(text: str) -> str:
     """Strip inline emphasis and trailing hashes from heading text.
 
-    pymupdf4llm marks headings bold ("# **Method**"); those markers are
+    pymupdf4llm marks headings bold ("# **Method**"); the markers are
     conversion noise — a heading is already emphasised by its level.
+    Returns '' when the heading is made only of markers.
     """
     text = text.strip()
-    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    prev = None
+    while prev != text:
+        prev = text
+        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text, flags=re.S).strip()
+    # Leftover unbalanced marker runs ("**", "__", "*") are not a title.
     text = re.sub(r"(?<!\w)__(.+?)__(?!\w)", r"\1", text)
     text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"\1", text)
     text = re.sub(r"(?<!\w)_(?!_)(.+?)(?<!_)_(?!\w)", r"\1", text)
     text = re.sub(r"`([^`]+)`", r"\1", text)
-    return text.strip()
+    text = text.strip()
+    if text and set(text) <= set("*_`~ \t"):
+        return ""
+    return text
 
 
 def _normalize_headings(lines, title):
@@ -384,6 +392,12 @@ def _normalize_headings(lines, title):
         if m:
             level = len(m.group(1))
             cleaned = _clean_heading_text(m.group(2))
+            if not cleaned:
+                # A heading made only of markers carries no title. Emitting
+                # it would produce a bare "## " and a nameless section.
+                kept.append("")
+                fixed.add("E006")
+                continue
             if cleaned != m.group(2):
                 ln = "#" * level + " " + cleaned
                 fixed.add("E006")
@@ -496,6 +510,16 @@ def clean(text: str, *, ocr: bool = False, meta=None, title=None,
     text = unicodedata.normalize("NFKC", text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
+    # Already-processed input: strip the frontmatter before re-normalizing, so
+    # a second pass does not eat the YAML block and turn its `---` fences into
+    # prose. `meta` re-supplies it, or the original is preserved verbatim.
+    existing_fm = None
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            existing_fm = text[4:end]
+            text = text[end + 5:]
+
     # De-hyphenate words broken across a line end, before anything else.
     text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
 
@@ -506,7 +530,11 @@ def clean(text: str, *, ocr: bool = False, meta=None, title=None,
     cleaned_pages = []
     for _num, body in pages:
         lines = _page_lines(body)
-        lines = _strip_page_numbers(lines)
+        if multi:
+            # Folio removal is only meaningful when the input actually has
+            # page structure. On a single-page document a bare numeric line
+            # ("42", a year, a data value) is content, not a page number.
+            lines = _strip_page_numbers(lines)
         lines = _strip_repeated(lines, headers, footers)
         cleaned_pages.append(lines)
 
@@ -538,10 +566,17 @@ def clean(text: str, *, ocr: bool = False, meta=None, title=None,
     lines = _italicize_captions(lines)
 
     body = "\n".join(lines)
-    body = re.sub(r"\n{3,}", "\n\n", body).strip() + "\n"
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    # An empty document stays empty. Appending a newline unconditionally made
+    # clean() non-idempotent on empty and whitespace-only input.
+    if body:
+        body += "\n"
 
     if meta is not None:
         body = render_frontmatter(meta) + "\n" + body
+    elif existing_fm is not None:
+        # Preserve the original block verbatim rather than regenerating it.
+        body = "---\n" + existing_fm + "\n---\n" + body
     return body
 
 
