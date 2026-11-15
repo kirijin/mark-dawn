@@ -20,6 +20,11 @@ GOLDEN = ROOT / "tests" / "golden"
 
 
 def _normalize(text):
+    # Frontmatter carries a conversion date, so it cannot be compared verbatim.
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            text = text[end + 5:]
     lines = [ln.rstrip() for ln in text.splitlines()]
     # collapse 3+ blank lines to 2
     out = []
@@ -48,7 +53,7 @@ def _deps_ok(need_ocr=False):
     return True
 
 
-@pytest.mark.parametrize("name,need_ocr", [("digital", False), ("scanned", True)])
+@pytest.mark.parametrize("name,need_ocr", [("book", False), ("digital", False), ("scanned", True)])
 def test_golden(name, need_ocr, tmp_path, monkeypatch):
     if not _deps_ok(need_ocr):
         pytest.skip("real conversion dependencies not available")

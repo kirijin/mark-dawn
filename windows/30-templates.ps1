@@ -204,6 +204,7 @@ goto help
     curl.exe -fsSL "https://raw.githubusercontent.com/kirijin/mark-dawn/main/watcher.py" -o "%SCRIPTS_DIR%\watcher.py" >nul 2>&1
     curl.exe -fsSL "https://raw.githubusercontent.com/kirijin/mark-dawn/main/convert_pdf.py" -o "%SCRIPTS_DIR%\convert_pdf.py" >nul 2>&1
     curl.exe -fsSL "https://raw.githubusercontent.com/kirijin/mark-dawn/main/docx_styler.py" -o "%SCRIPTS_DIR%\docx_styler.py" >nul 2>&1
+    curl.exe -fsSL "https://raw.githubusercontent.com/kirijin/mark-dawn/main/mdclean.py" -o "%SCRIPTS_DIR%\mdclean.py" >nul 2>&1
     echo [2/3] Updating Python packages (pinned requirements)...
     if exist "%PYTHON%" (
         "%PYTHON%" -m pip install --upgrade --no-cache-dir -r "%INSTALL_DIR%\requirements.txt"

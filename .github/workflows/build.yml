@@ -41,6 +41,7 @@ jobs:
             "convert_pdf.py"
             "watcher.py"
             "docx_styler.py"
+            "mdclean.py"
             "entrypoint.sh"
             "install.sh"
             "install-macos.sh"
@@ -99,7 +100,14 @@ jobs:
           python3 -m py_compile convert_pdf.py
           python3 -m py_compile watcher.py
           python3 -m py_compile docx_styler.py
+          python3 -m py_compile mdclean.py
           echo "✓ Python syntax valid"
+
+      - name: Gate the golden fixtures on structure
+        run: |
+          echo "Checking converted fixtures against the readability gate..."
+          python3 mdclean.py tests/golden/expected/book.md --check
+          echo "✓ Golden fixtures pass the gate"
 
       - name: Validate shell script syntax
         run: |

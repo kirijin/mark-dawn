@@ -508,7 +508,7 @@ function Step-GenerateScripts {
         # Download the canonical scripts — same files every other platform runs.
         # (No more embedded copies: the watcher/converter now live in exactly
         # one place in the repo and diverge on nothing.)
-        foreach ($script in @("watcher.py", "convert_pdf.py", "docx_styler.py")) {
+        foreach ($script in @("watcher.py", "convert_pdf.py", "docx_styler.py", "mdclean.py")) {
             $dest = Join-PathSafe $Script:_scriptsDir $script
             Invoke-DownloadWithRetry -Url "$($Script:REPO_URL)/$script" -OutFile $dest `
                 -MaxRetries 2 -TimeoutSec 120
@@ -519,7 +519,7 @@ function Step-GenerateScripts {
 
         # Verify scripts with Python syntax check
         if (Test-Path $Script:_pythonExe -PathType Leaf) {
-            foreach ($script in @("watcher.py", "convert_pdf.py", "docx_styler.py")) {
+            foreach ($script in @("watcher.py", "convert_pdf.py", "docx_styler.py", "mdclean.py")) {
                 $scriptPath = Join-PathSafe $Script:_scriptsDir $script
                 $proc = Start-Process -FilePath $Script:_pythonExe -ArgumentList @("-m", "py_compile", $scriptPath) -Wait -PassThru -NoNewWindow
                 if ($proc.ExitCode -ne 0) { Write-Log "Warn" "$script syntax check failed" -NoConsole }

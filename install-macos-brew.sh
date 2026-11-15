@@ -304,7 +304,7 @@ for mod in pymupdf4llm markitdown watchdog docx; do
 done
 
 # Deploy Python scripts
-for script in convert_pdf.py watcher.py docx_styler.py; do
+for script in convert_pdf.py watcher.py docx_styler.py mdclean.py; do
     URL="$REPO_URL/$script"
     DEST="$VENV_DIR/bin/$script"
     if command -v curl &>/dev/null; then

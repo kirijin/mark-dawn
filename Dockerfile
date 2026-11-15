@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 COPY convert_pdf.py /usr/local/bin/
 COPY docx_styler.py /usr/local/bin/
+COPY mdclean.py /usr/local/bin/
 COPY watcher.py /usr/local/bin/
 COPY entrypoint.sh /usr/local/bin/
 

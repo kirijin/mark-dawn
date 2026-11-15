@@ -147,6 +147,15 @@ class TestPdfTextRatio:
         assert n == 0
 
 
+def _body(text):
+    """Strip YAML frontmatter so assertions target converted content."""
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            return text[end + 5:]
+    return text
+
+
 # ---------------------------------------------------------------------------
 #  _handle_pdf  — dispatch to digital vs scanned vs empty
 # ---------------------------------------------------------------------------
@@ -163,7 +172,7 @@ class TestHandlePdf:
             convert_pdf._handle_pdf(Path("/tmp/dummy.pdf"), out)
 
             assert to_md.called
-            assert out.read_text() == "# Digital\n"
+            assert _body(out.read_text()).strip() == "# Digital"
             out.unlink(missing_ok=True)
 
     def test_scanned_path(self, fitz_mocks):
@@ -209,7 +218,7 @@ class TestHandleDjVu:
             run.return_value = mock.MagicMock(returncode=0, stdout="Native text\n")
             convert_pdf._handle_djvu(Path("/tmp/doc.djvu"), out)
 
-        assert out.read_text() == "Native text\n"
+        assert _body(out.read_text()).strip() == "Native text"
         out.unlink(missing_ok=True)
 
     def test_ddjvu_render(self):
@@ -281,7 +290,7 @@ class TestHandleDoc:
             run.return_value = mock.MagicMock(returncode=0, stdout="# Converted\n")
             convert_pdf._handle_doc(Path("/tmp/report.docx"), out)
 
-        assert out.read_text() == "# Converted\n"
+        assert _body(out.read_text()).strip() == "# Converted"
         out.unlink(missing_ok=True)
 
     def test_failure_exits(self):

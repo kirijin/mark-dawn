@@ -47,7 +47,7 @@ $repo = "C:\mark-dawn"
 if (-not (Test-Path "$repo\convert_pdf.py")) {
     # Fetch via the GitHub raw URL (requires internet in the VM)
     New-Item -ItemType Directory -Force -Path $repo | Out-Null
-    foreach ($f in @("convert_pdf.py","docx_styler.py","watcher.py","requirements.txt")) {
+    foreach ($f in @("convert_pdf.py","docx_styler.py","watcher.py","mdclean.py","requirements.txt")) {
         Invoke-WebRequest -Uri "https://raw.githubusercontent.com/kirijin/mark-dawn/main/$f" -OutFile "$repo\$f" -UseBasicParsing
     }
 }

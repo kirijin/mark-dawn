@@ -247,7 +247,13 @@ def _release_lock(lock):
 
 
 def _clean_markdown(text: str) -> str:
-    """Deterministic cleanup of generated markdown (OCR-friendly)."""
+    """Deterministic cleanup of generated markdown (OCR-friendly).
+
+    Structure repair (page de-noise, heading normalization, paragraph join,
+    table repair) lives in mdclean.clean — this function only keeps the
+    original NFKC + blank-collapse behaviour for callers that bypass the
+    full pipeline.
+    """
     import re, unicodedata
     text = unicodedata.normalize("NFKC", text)
     # De-hyphenate line-broken words (common OCR artifact).
@@ -284,10 +290,41 @@ def _llm_cleanup(text: str) -> str:
         return text
 
 
-def _atomic_write(path: Path, text: str):
-    """Clean, optionally keep raw, then atomically replace the output."""
+def _atomic_write(path: Path, text: str, *, ocr: bool = False,
+                  source: "str | None" = None,
+                  page_count: "int | None" = None,
+                  run_clean: bool = True):
+    """Clean, optionally keep raw, then atomically replace the output.
+
+    `run_clean` runs the full mdclean pipeline (page de-noise, heading
+    normalization, paragraph join, table repair) and appends YAML frontmatter
+    carrying provenance. Callers that already produced clean markdown can pass
+    run_clean=False to keep only the legacy NFKC + blank-collapse pass.
+    """
     raw = text
-    text = _clean_markdown(text)
+    if run_clean and text.strip():
+        import mdclean
+        meta = {}
+        if source:
+            meta["source"] = source
+        if page_count:
+            meta["pages"] = page_count
+        if ocr:
+            meta["ocr"] = True
+        meta["converted"] = time.strftime("%Y-%m-%d")
+        try:
+            text = mdclean.clean(text, ocr=ocr, meta=meta,
+                                 title=path.stem.replace("_", " "))
+        except Exception as e:
+            print(f"mdclean failed, falling back to basic cleanup: {e}",
+                  file=sys.stderr)
+            text = _clean_markdown(text)
+    elif run_clean:
+        # Empty OCR result stays empty: synthesizing a heading from the
+        # filename would invent structure the document does not have.
+        text = ""
+    else:
+        text = _clean_markdown(text)
     if os.environ.get("MARK_DAWN_LLM_CLEANUP") == "1":
         text = _llm_cleanup(text)
     if os.environ.get("MARK_DAWN_KEEP_RAW") == "1":
@@ -653,9 +690,10 @@ def _rapidocr_text(images):
     return "\n\n".join(parts)
 
 
-def _ocr_with_rapidocr(images, out_md):
+def _ocr_with_rapidocr(images, out_md, source: "str | None" = None):
     text = _rapidocr_text(images)
-    _atomic_write(out_md, text if text.strip() else "")
+    _atomic_write(out_md, text if text.strip() else "", ocr=True,
+                  source=source, page_count=len(images))
     print("OCR complete (RapidOCR). Converting to Markdown...")
 
 
@@ -675,6 +713,35 @@ def _md_to_docx(md_path):
         print("  --docx skipped: needs python-docx or pandoc", file=sys.stderr)
 
 
+def _pdf_markdown(path, pages=None):
+    """Convert a digital PDF to markdown with page provenance preserved.
+
+    pymupdf4llm emits no page markers by default, so page-aware de-noise (a
+    running header repeated on every page) has nothing to key on. Requesting
+    per-page chunks and injecting `<!-- page N -->` gives mdclean the
+    structure it needs while keeping the marker out of the heading tree.
+
+    The chunk metadata key differs by parser: the text parser reports `page`,
+    the OCR-backed one reports `page_number`. Both are accepted.
+    """
+    chunks = pymupdf4llm.to_markdown(str(path), pages=pages, page_chunks=True)
+    if isinstance(chunks, str):  # older return shape; nothing to key on
+        return chunks
+    out = []
+    for chunk in chunks or []:
+        if not isinstance(chunk, dict):
+            out.append(str(chunk))
+            continue
+        meta = chunk.get("metadata") or {}
+        text = (chunk.get("text") or "").strip()
+        if not text:
+            continue
+        number = meta.get("page") or meta.get("page_number")
+        marker = "<!-- page %s -->" % number if number else None
+        out.append((marker + "\n\n" + text).strip() if marker else text)
+    return "\n\n".join(out)
+
+
 def _handle_pdf(file_path, out_md):
     avg, n = _pdf_text_ratio(file_path)
     if n == 0:
@@ -687,8 +754,8 @@ def _handle_pdf(file_path, out_md):
             print(f"WARNING: digital PDF has {n} pages; processing first "
                   f"{MAX_PAGES}. Set MARK_DAWN_MAX_PAGES to raise the cap.",
                   file=sys.stderr)
-        md = pymupdf4llm.to_markdown(str(file_path), pages=pages)
-        _atomic_write(out_md, md)
+        md = _pdf_markdown(file_path, pages=pages)
+        _atomic_write(out_md, md, source=file_path.name, page_count=n)
         print(f"Digital PDF ({int(avg)} chars/page). Converting via pymupdf4llm...")
         return
 
@@ -715,7 +782,7 @@ def _handle_pdf(file_path, out_md):
         print("No pages rendered; nothing to convert.", file=sys.stderr)
         sys.exit(1)
 
-    _ocr_with_rapidocr(images, out_md)
+    _ocr_with_rapidocr(images, out_md, source=file_path.name)
 
 
 def _djvu_page_count(file_path):
@@ -734,7 +801,8 @@ def _handle_djvu(file_path, out_md):
         r = subprocess.run(["djvutxt", str(file_path)], capture_output=True,
                            text=True, timeout=120, env=_build_env())
         if r.returncode == 0 and r.stdout.strip():
-            _atomic_write(out_md, r.stdout)
+            _atomic_write(out_md, r.stdout, source=file_path.name,
+                          page_count=_djvu_page_count(file_path))
             print(f"OK: {out_md.name} (native DjVu text)")
             return
     if shutil.which("ddjvu"):
@@ -766,7 +834,7 @@ def _handle_djvu(file_path, out_md):
                     ppm.unlink()
             if images:
                 print(f"  Rendered {len(images)} page(s) via ddjvu")
-                _ocr_with_rapidocr(images, out_md)
+                _ocr_with_rapidocr(images, out_md, source=file_path.name)
                 return
     print("  DjVu support requires djvulibre-bin (djvutxt + ddjvu + djvused)", file=sys.stderr)
     sys.exit(1)
@@ -780,7 +848,7 @@ def _handle_image(file_path, out_md):
         print(f"Cannot open image: {e}", file=sys.stderr)
         sys.exit(1)
 
-    _ocr_with_rapidocr([img], out_md)
+    _ocr_with_rapidocr([img], out_md, source=file_path.name)
 
 
 def _handle_doc(file_path, out_md):
@@ -789,7 +857,7 @@ def _handle_doc(file_path, out_md):
     r = subprocess.run(["markitdown", str(file_path)],
                        capture_output=True, text=True, timeout=120, env=_build_env())
     if r.returncode == 0 and r.stdout.strip():
-        _atomic_write(out_md, r.stdout)
+        _atomic_write(out_md, r.stdout, source=file_path.name)
         print(f"OK: {out_md.name}")
     else:
         print(f"markitdown failed (exit {r.returncode})", file=sys.stderr)

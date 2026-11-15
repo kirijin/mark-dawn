@@ -81,11 +81,47 @@ graph LR
     F -->|no| D
     D --> H["RapidOCR (ONNX)"]
     H --> C
-    C --> I[.md file]
+    C --> M[mdclean]
+    G --> M
+    E --> M
+    M --> I[.md file]
     I --> J{--docx?}
     J -->|yes| K[python-docx / pandoc]
     K --> L[.docx file]
 ```
+
+### Structure cleanup (mdclean)
+
+Every producer's output goes through `mdclean.py` before it is written. Conversion
+gets text out of a file; mdclean makes that text *navigable* — the difference
+between a document you can read and one a retrieval layer can actually use.
+
+Stages, in order:
+
+- **Page de-noise** — running headers, footers and folios detected by repetition
+  across pages, then removed. Digital PDFs carry `<!-- page N -->` provenance so
+  de-noise has page boundaries to key on (pymupdf4llm emits none by default).
+- **Paragraph repair** — hard-wrapped lines joined into one line per paragraph,
+  using the blank line as the delimiter. Fenced code and lists are never joined.
+- **Heading normalization** — inline emphasis stripped (`# **Method**` →
+  `# Method`), caption headings (`### Figure 3`) demoted to italics, level jumps
+  raised, a title synthesized for substantial documents that lack one.
+- **Table repair** — GFM rows padded to a consistent width, separator row inserted.
+- **Frontmatter** — `source`, `pages`, `ocr`, `converted` written as YAML.
+- **Quality gate** — each conversion writes `<name>.md.qc.json` with error and
+  warning counts; the watcher logs a `WARN:` line when structure errors remain.
+
+Standalone, on any Markdown file:
+
+```bash
+python3 mdclean.py FILE.md --check     # gate; exit 1 on structure errors
+python3 mdclean.py FILE.md -o OUT.md   # write a cleaned copy
+```
+
+Findings are codes, not prose, so CI can fail on structure without failing on style:
+`E001` no H1 · `E003` level jump · `E004` page marker or caption in heading
+position · `E005` running header survived · `E006` emphasis in heading · `W001`
+oversized chapter · `W005` no chapter structure.
 
 ### Plugins
 

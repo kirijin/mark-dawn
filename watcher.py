@@ -172,6 +172,37 @@ def _convert(path):
     return None
 
 
+def _quality_report(path):
+    """Score a converted file against the structure gate.
+
+    Writes `<name>.qc.json` next to the output and returns the error count.
+    Never raises: a quality report must not be able to fail a conversion.
+    """
+    try:
+        import mdclean
+    except Exception:
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+        findings = mdclean.analyze(text)
+        errors = sum(1 for s, _c, _m in findings if s == "E")
+        payload = {
+            "file": path.name,
+            "errors": errors,
+            "warnings": len(findings) - errors,
+            "findings": [{"severity": s, "code": c, "message": m}
+                         for s, c, m in findings[:20]],
+        }
+        sidecar = path.with_name(path.name + ".qc.json")
+        tmp = sidecar.with_name(sidecar.name + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+        os.replace(tmp, sidecar)
+        return errors
+    except Exception as e:
+        log(f"quality report failed for {path.name}: {e}")
+        return None
+
+
 def _move_failed(path):
     try:
         FAILED.mkdir(parents=True, exist_ok=True)
@@ -188,7 +219,12 @@ def process_file(path):
     if isinstance(result, str):  # "busy" sentinel — lock held elsewhere
         return "busy"
     if isinstance(result, Path):
-        log(f"OK: {path.name} -> {result.name}")
+        errors = _quality_report(result)
+        if errors:
+            log(f"WARN: {path.name} -> {result.name} "
+                f"({errors} structure error(s), see {result.name}.qc.json)")
+        else:
+            log(f"OK: {path.name} -> {result.name}")
         _note_result(path.name, "ok", result.name)
         return True
     return False
