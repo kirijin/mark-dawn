@@ -27,16 +27,17 @@ env:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    # Pinned, not -latest: the floating tag rolled to 26.04 and silently moved
+    # the default Python to 3.14, breaking dependency resolution.
+    runs-on: ubuntu-24.04
     name: Validate scripts, tests and configuration
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      # ubuntu-latest has moved to 26.04 with Python 3.14, where the pinned
-      # markitdown[all]==0.1.7 cannot resolve (its youtube-transcript-api pin
-      # has no 3.14 wheel). Pin 3.12 — the version requirements.txt and the
-      # Dockerfile actually target.
+      # ubuntu-24.04 ships Python 3.12, which is what requirements.txt and the
+      # Dockerfile (python:3.12-slim) target. setup-python makes that explicit
+      # rather than depending on the image default.
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
@@ -167,7 +168,7 @@ jobs:
 
   build-and-push:
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -236,7 +237,7 @@ jobs:
 
   smoke:
     needs: build-and-push
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: Container conversion smoke test
     steps:
       - name: Checkout repository
